@@ -1,3 +1,4 @@
+use malachite_nz::integer::Integer;
 use pyo3::prelude::*;
 
 /// Create a discriminant from a seed and bit length.
@@ -7,8 +8,8 @@ use pyo3::prelude::*;
 #[pyfunction]
 fn create_discriminant(seed: &[u8], length: usize) -> String {
     let d = crate::discriminant::create_discriminant(seed, length);
-    // d is negative; format magnitude as hex with leading '-'
-    format!("-{:x}", d.magnitude())
+    // d is negative; format as hex (Integer's LowerHex includes the sign)
+    format!("{:x}", d)
 }
 
 /// Verify a VDF N-Wesolowski proof.
@@ -29,7 +30,7 @@ fn verify_n_wesolowski(
     _discriminant_size: usize,
     witness_type: u64,
 ) -> bool {
-    let d: num_bigint::BigInt = match disc.parse() {
+    let d: Integer = match disc.parse() {
         Ok(v) => v,
         Err(_) => return false,
     };
