@@ -19,6 +19,26 @@ Verification is ~2x slower than the C/GMP version, which is acceptable for conse
 
 Chia mainnet uses 1024-bit discriminants. Typical verification is under 60ms per proof.
 
+## How VDF verification works
+
+A [Verifiable Delay Function](https://en.wikipedia.org/wiki/Verifiable_delay_function) requires T sequential squarings to compute but is fast to verify. Chia uses the [Wesolowski scheme](https://eprint.iacr.org/2018/623) operating in [class groups](https://en.wikipedia.org/wiki/Ideal_class_group) of imaginary quadratic fields.
+
+**Key concepts:**
+
+- **Discriminant (D):** A large negative prime (1024 bits on mainnet) that defines the class group. Generated deterministically from a challenge hash via `CreateDiscriminant`.
+
+- **Forms:** Elements of the class group, represented as binary quadratic forms (a, b, c) where b² − 4ac = D. These form a group under [composition](https://en.wikipedia.org/wiki/Binary_quadratic_form#Composition) (NUCOMP). The identity element is (1, 1, (1−D)/4).
+
+- **The VDF computation:** Starting from the identity form x, compute y = x^(2^T) — i.e., square the form T times. This is inherently sequential.
+
+- **The proof:** The prover also produces a proof form π. Verification checks:
+
+  \[ \pi^B \cdot x^r = y \]
+
+  where B = HashPrime(x ‖ y) is a 264-bit prime derived from the input/output, and r = 2^T mod B. This requires only a few group exponentiations — much faster than the T squarings.
+
+- **Depth (n-Wesolowski):** A proof can be split into n segments, each with its own sub-proof. Depth 0 = single proof; higher depths break the proof into pieces with intermediate checkpoints. More segments means a larger proof blob but allows parallelized proving. Verification checks each segment in sequence.
+
 ## Usage
 
 ```rust
