@@ -6,10 +6,12 @@ use pyo3::prelude::*;
 /// matching the chiavdf format: e.g. "-3abc...".
 /// Callers convert via: int(result, 16)
 #[pyfunction]
-fn create_discriminant(seed: &[u8], length: usize) -> String {
-    let d = crate::discriminant::create_discriminant(seed, length);
-    // d is negative; format as hex (Integer's LowerHex includes the sign)
-    format!("{:x}", d)
+fn create_discriminant(py: Python<'_>, seed: &[u8], length: usize) -> String {
+    let seed = seed.to_vec();
+    py.allow_threads(move || {
+        let d = crate::discriminant::create_discriminant(&seed, length);
+        format!("{:x}", d)
+    })
 }
 
 /// Verify a VDF N-Wesolowski proof.
@@ -23,6 +25,7 @@ fn create_discriminant(seed: &[u8], length: usize) -> String {
 ///   witness_type         - proof depth (0, 1, 2, …)
 #[pyfunction]
 fn verify_n_wesolowski(
+    py: Python<'_>,
     disc: &str,
     input_el: &[u8],
     output: &[u8],
@@ -34,13 +37,17 @@ fn verify_n_wesolowski(
         Ok(v) => v,
         Err(_) => return false,
     };
-    crate::verifier::check_proof_of_time_n_wesolowski(
-        &d,
-        input_el,
-        output,
-        number_of_iterations,
-        witness_type,
-    )
+    let input_el = input_el.to_vec();
+    let output = output.to_vec();
+    py.allow_threads(move || {
+        crate::verifier::check_proof_of_time_n_wesolowski(
+            &d,
+            &input_el,
+            &output,
+            number_of_iterations,
+            witness_type,
+        )
+    })
 }
 
 #[pymodule]
