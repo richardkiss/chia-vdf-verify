@@ -166,7 +166,7 @@ pub fn get_si_2exp(n: &BigInt) -> (i64, i64) {
     let bits = num_bits(n) as i64;
     // Get the top 64 bits
     let shift = if bits > 64 { bits - 64 } else { 0 };
-    let (_, mag_bytes) = n.to_bytes_be();
+    let (_, _mag_bytes) = n.to_bytes_be();
     // Extract via shifting
     let shifted = n.magnitude() >> shift as usize;
     let (_, top_bytes) = BigInt::from(shifted).to_bytes_be();
@@ -223,8 +223,10 @@ pub fn fast_extended_gcd(a: &BigInt, b: &BigInt) -> (BigInt, BigInt, BigInt) {
 
     // Maintain: r0 = s0 * |a| + t0 * |b|
     //           r1 = s1 * |a| + t1 * |b|
-    let mut s0 = BigInt::one();  let mut t0 = BigInt::zero();
-    let mut s1 = BigInt::zero(); let mut t1 = BigInt::one();
+    let mut s0 = BigInt::one();
+    let mut t0 = BigInt::zero();
+    let mut s1 = BigInt::zero();
+    let mut t1 = BigInt::one();
 
     while !r1.is_zero() {
         let (p, q, r, s, steps) = lehmer_inner_loop(&r0, &r1);
@@ -232,8 +234,12 @@ pub fn fast_extended_gcd(a: &BigInt, b: &BigInt) -> (BigInt, BigInt, BigInt) {
             let qq = &r0 / &r1;
             let rem = &r0 - &qq * &r1;
             r0 = std::mem::replace(&mut r1, rem);
-            let ns0 = s0 - &qq * &s1; let old = std::mem::replace(&mut s1, ns0); s0 = old;
-            let nt0 = t0 - &qq * &t1; let old = std::mem::replace(&mut t1, nt0); t0 = old;
+            let ns0 = s0 - &qq * &s1;
+            let old = std::mem::replace(&mut s1, ns0);
+            s0 = old;
+            let nt0 = t0 - &qq * &t1;
+            let old = std::mem::replace(&mut t1, nt0);
+            t0 = old;
         } else {
             let nr0 = BigInt::from(p) * &r0 + BigInt::from(q) * &r1;
             let nr1 = BigInt::from(r) * &r0 + BigInt::from(s) * &r1;
@@ -243,14 +249,22 @@ pub fn fast_extended_gcd(a: &BigInt, b: &BigInt) -> (BigInt, BigInt, BigInt) {
             let nt1 = BigInt::from(r) * &t0 + BigInt::from(s) * &t1;
             // Fix signs: keep residues non-negative
             if nr1.is_negative() {
-                r1 = -nr1; s1 = -ns1; t1 = -nt1;
+                r1 = -nr1;
+                s1 = -ns1;
+                t1 = -nt1;
             } else {
-                r1 = nr1; s1 = ns1; t1 = nt1;
+                r1 = nr1;
+                s1 = ns1;
+                t1 = nt1;
             }
             if nr0.is_negative() {
-                r0 = -nr0; s0 = -ns0; t0 = -nt0;
+                r0 = -nr0;
+                s0 = -ns0;
+                t0 = -nt0;
             } else {
-                r0 = nr0; s0 = ns0; t0 = nt0;
+                r0 = nr0;
+                s0 = ns0;
+                t0 = nt0;
             }
         }
     }
@@ -278,14 +292,28 @@ pub fn fast_gcd_coeff_b(a: &BigInt, b: &BigInt) -> (BigInt, BigInt) {
             let qq = &r0 / &r1;
             let rem = &r0 - &qq * &r1;
             r0 = std::mem::replace(&mut r1, rem);
-            let nt0 = t0 - &qq * &t1; let old = std::mem::replace(&mut t1, nt0); t0 = old;
+            let nt0 = t0 - &qq * &t1;
+            let old = std::mem::replace(&mut t1, nt0);
+            t0 = old;
         } else {
             let nr0 = BigInt::from(p) * &r0 + BigInt::from(q) * &r1;
             let nr1 = BigInt::from(r) * &r0 + BigInt::from(s) * &r1;
             let nt0 = BigInt::from(p) * &t0 + BigInt::from(q) * &t1;
             let nt1 = BigInt::from(r) * &t0 + BigInt::from(s) * &t1;
-            if nr1.is_negative() { r1 = -nr1; t1 = -nt1; } else { r1 = nr1; t1 = nt1; }
-            if nr0.is_negative() { r0 = -nr0; t0 = -nt0; } else { r0 = nr0; t0 = nt0; }
+            if nr1.is_negative() {
+                r1 = -nr1;
+                t1 = -nt1;
+            } else {
+                r1 = nr1;
+                t1 = nt1;
+            }
+            if nr0.is_negative() {
+                r0 = -nr0;
+                t0 = -nt0;
+            } else {
+                r0 = nr0;
+                t0 = nt0;
+            }
         }
     }
 
@@ -302,22 +330,34 @@ fn lehmer_inner_loop(r0: &BigInt, r1: &BigInt) -> (i64, i64, i64, i64, usize) {
     let shift = std::cmp::max(std::cmp::max(bits0, bits1) - LIMB_BITS as i64 + 1, 0) as usize;
     let mut rr0 = extract_word_unsigned(r0, shift);
     let mut rr1 = extract_word_unsigned(r1, shift);
-    let mut p: i64 = 1; let mut q: i64 = 0;
-    let mut r: i64 = 0; let mut s: i64 = 1;
+    let mut p: i64 = 1;
+    let mut q: i64 = 0;
+    let mut r: i64 = 0;
+    let mut s: i64 = 1;
     let mut i = 0usize;
     loop {
-        if rr1 == 0 { break; }
+        if rr1 == 0 {
+            break;
+        }
         let qq = rr0 / rr1;
         let t1_ = rr0 - qq * rr1;
         let tp = p - qq * r;
         let tq = q - qq * s;
         if i & 1 == 0 {
-            if t1_ < -tq || rr1 - t1_ < tp - p { break; }
+            if t1_ < -tq || rr1 - t1_ < tp - p {
+                break;
+            }
         } else {
-            if t1_ < -tp || rr1 - t1_ < tq - q { break; }
+            if t1_ < -tp || rr1 - t1_ < tq - q {
+                break;
+            }
         }
-        rr0 = rr1; rr1 = t1_;
-        p = r; q = s; r = tp; s = tq;
+        rr0 = rr1;
+        rr1 = t1_;
+        p = r;
+        q = s;
+        r = tp;
+        s = tq;
         i += 1;
     }
     (p, q, r, s, i)
@@ -341,19 +381,41 @@ mod tests {
     #[test]
     fn test_fast_extended_gcd() {
         let cases: Vec<(i64, i64, i64)> = vec![
-            (5, 3, 1), (6, 4, 2), (100, 37, 1), (15, 10, 5),
-            (7, 5, 1), (35, 20, 5), (1000000, 999983, 1),
-            (0, 7, 7), (7, 0, 7), (1, 1, 1),
+            (5, 3, 1),
+            (6, 4, 2),
+            (100, 37, 1),
+            (15, 10, 5),
+            (7, 5, 1),
+            (35, 20, 5),
+            (1000000, 999983, 1),
+            (0, 7, 7),
+            (7, 0, 7),
+            (1, 1, 1),
         ];
         for (a, b, expected_gcd) in cases {
             let ba = BigInt::from(a);
             let bb = BigInt::from(b);
             let (gcd, x, y) = fast_extended_gcd(&ba, &bb);
-            assert_eq!(gcd, BigInt::from(expected_gcd),
-                "gcd({},{}) wrong: got {}", a, b, gcd);
-            assert_eq!(&x * &ba + &y * &bb, gcd,
+            assert_eq!(
+                gcd,
+                BigInt::from(expected_gcd),
+                "gcd({},{}) wrong: got {}",
+                a,
+                b,
+                gcd
+            );
+            assert_eq!(
+                &x * &ba + &y * &bb,
+                gcd,
                 "Bezout identity failed for ({},{}): {}*{}+{}*{}≠{}",
-                a, b, x, a, y, b, gcd);
+                a,
+                b,
+                x,
+                a,
+                y,
+                b,
+                gcd
+            );
         }
         // Test with negative inputs
         let (gcd, x, y) = fast_extended_gcd(&BigInt::from(-15i64), &BigInt::from(10i64));

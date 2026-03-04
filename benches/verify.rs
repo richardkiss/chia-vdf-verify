@@ -1,11 +1,12 @@
-use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
-use chia_vdf_verify::verifier::check_proof_of_time_n_wesolowski;
 use chia_vdf_verify::integer::from_bytes_be;
+use chia_vdf_verify::verifier::check_proof_of_time_n_wesolowski;
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use num_bigint::BigInt;
 
 fn hex_decode(s: &str) -> Vec<u8> {
-    (0..s.len()).step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i+2], 16).unwrap())
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
         .collect()
 }
 
@@ -21,25 +22,33 @@ const P2_HEX: &str = "030033205ea6d1ab367757073029f1462eb2fcc79749871d0b576f7a39
 fn bench_verify(c: &mut Criterion) {
     let d1: BigInt = -from_bytes_be(&hex_decode(D1_HEX));
     let d2: BigInt = -from_bytes_be(&hex_decode(D2_HEX));
-    let x_s  = hex_decode(X_HEX);
-    let p1   = hex_decode(P1_HEX);
-    let p2   = hex_decode(P2_HEX);
+    let x_s = hex_decode(X_HEX);
+    let p1 = hex_decode(P1_HEX);
+    let p2 = hex_decode(P2_HEX);
 
     let mut group = c.benchmark_group("verify");
 
-    group.bench_with_input(BenchmarkId::new("iters", 100), &(&d1, &x_s, &p1, 100u64), |b, (d, x, p, iters)| {
-        b.iter(|| {
-            let result = check_proof_of_time_n_wesolowski(d, x, p, *iters, 0);
-            assert!(result);
-        });
-    });
+    group.bench_with_input(
+        BenchmarkId::new("iters", 100),
+        &(&d1, &x_s, &p1, 100u64),
+        |b, (d, x, p, iters)| {
+            b.iter(|| {
+                let result = check_proof_of_time_n_wesolowski(d, x, p, *iters, 0);
+                assert!(result);
+            });
+        },
+    );
 
-    group.bench_with_input(BenchmarkId::new("iters", 200), &(&d2, &x_s, &p2, 200u64), |b, (d, x, p, iters)| {
-        b.iter(|| {
-            let result = check_proof_of_time_n_wesolowski(d, x, p, *iters, 0);
-            assert!(result);
-        });
-    });
+    group.bench_with_input(
+        BenchmarkId::new("iters", 200),
+        &(&d2, &x_s, &p2, 200u64),
+        |b, (d, x, p, iters)| {
+            b.iter(|| {
+                let result = check_proof_of_time_n_wesolowski(d, x, p, *iters, 0);
+                assert!(result);
+            });
+        },
+    );
 
     group.finish();
 }

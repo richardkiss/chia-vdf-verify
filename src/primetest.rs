@@ -4,19 +4,18 @@
 //! - chiavdf/src/primetest.h (is_prime_bpsw)
 //! - chiavdf/src/proof_common.h (HashPrime)
 
+use crate::integer::{jacobi, modpow};
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{One, Signed, Zero};
 use sha2::{Digest, Sha256};
-use crate::integer::{jacobi, modpow};
 
 /// Small prime products for trial division (subset — enough for fast rejection).
 /// These are products of consecutive primes.
 static SMALL_PRIMES: &[u64] = &[
-    2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47,
-    53, 59, 61, 67, 71, 73, 79, 83, 89, 97,
-    101, 103, 107, 109, 113, 127, 131, 137, 139, 149,
-    151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199,
+    2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97,
+    101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193,
+    197, 199,
 ];
 
 /// Miller-Rabin test with given base `b` modulo `n`.
@@ -77,7 +76,11 @@ fn is_vprp(n: &BigInt) -> bool {
     let v1_mod = if q < 0 {
         // cdiv_r (ceiling division remainder)
         let m = v1.mod_floor(n);
-        if m.is_negative() { m + n } else { m }
+        if m.is_negative() {
+            m + n
+        } else {
+            m
+        }
     } else {
         v1.mod_floor(n)
     };
@@ -90,7 +93,7 @@ fn is_vprp(n: &BigInt) -> bool {
 fn find_lucas_v(e: &BigInt, m: &BigInt, p: i64, q: i64) -> BigInt {
     let l = e.bits() as usize;
 
-    let mut u1 = BigInt::one();  // U_1
+    let mut u1 = BigInt::one(); // U_1
     let mut u2 = BigInt::from(p); // U_2
     let minus_2q = -2 * q;
 
@@ -241,7 +244,11 @@ mod tests {
             assert!(is_prime_bpsw(&BigInt::from(p)), "{} should be prime", p);
         }
         for &c in &[4u64, 6, 9, 15, 25, 35, 49, 100] {
-            assert!(!is_prime_bpsw(&BigInt::from(c)), "{} should be composite", c);
+            assert!(
+                !is_prime_bpsw(&BigInt::from(c)),
+                "{} should be composite",
+                c
+            );
         }
     }
 
@@ -250,6 +257,10 @@ mod tests {
         let seed = b"test_seed_12345";
         let p = hash_prime(seed, 256, &[255]);
         assert!(is_prime_bpsw(&p), "hash_prime result should be prime");
-        assert_eq!(p.bits(), 256, "hash_prime result should have correct bit length");
+        assert_eq!(
+            p.bits(),
+            256,
+            "hash_prime result should have correct bit length"
+        );
     }
 }

@@ -3,11 +3,11 @@
 //! Port of chiavdf/src/Reducer.h.
 //! Reduces a quadratic form (a, b, c) to its canonical reduced representative.
 
+use crate::form::Form;
+use crate::integer::get_si_2exp;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::Signed;
-use crate::form::Form;
-use crate::integer::get_si_2exp;
 
 const THRESH: i64 = 1i64 << 31;
 const EXP_THRESH: i64 = 31;
@@ -32,15 +32,16 @@ pub fn reduce(f: &mut Form) {
         let b_sh = max_exp - b_exp;
         let c_sh = max_exp - c_exp;
 
-        let mut a = a_val >> a_sh;
-        let mut b = b_val >> b_sh;
-        let mut c = c_val >> c_sh;
+        let a = a_val >> a_sh;
+        let b = b_val >> b_sh;
+        let c = c_val >> c_sh;
 
         let (u, v, w, x) = calc_uvwx(a, b, c);
 
         // Apply the (u,v,w,x) matrix to (a, b, c)
         let new_a = f.a.clone() * (u * u) + f.b.clone() * (u * w) + f.c.clone() * (w * w);
-        let new_b = f.a.clone() * (2 * u * v) + f.b.clone() * (u * x + v * w) + f.c.clone() * (2 * w * x);
+        let new_b =
+            f.a.clone() * (2 * u * v) + f.b.clone() * (u * x + v * w) + f.c.clone() * (2 * w * x);
         let new_c = f.a.clone() * (v * v) + f.b.clone() * (v * x) + f.c.clone() * (x * x);
 
         f.a = new_a;
@@ -106,7 +107,7 @@ fn ceildiv(a: &BigInt, b: &BigInt) -> BigInt {
 /// Returns true if already reduced (but may have swapped a/c or negated b).
 fn is_reduced(f: &mut Form) -> bool {
     use num_traits::Signed;
-    let abs_b = f.b.abs();
+    let _abs_b = f.b.abs();
 
     let a_cmpabs_b = f.a.magnitude().cmp(f.b.magnitude());
     let c_cmpabs_b = f.c.magnitude().cmp(f.b.magnitude());
@@ -139,7 +140,10 @@ fn calc_uvwx(mut a: i64, mut b: i64, mut c: i64) -> (i64, i64, i64, i64) {
     let mut x;
 
     loop {
-        u = u_; v = v_; w = w_; x = x_;
+        u = u_;
+        v = v_;
+        w = w_;
+        x = x_;
 
         if c == 0 {
             break;
@@ -166,7 +170,10 @@ fn calc_uvwx(mut a: i64, mut b: i64, mut c: i64) -> (i64, i64, i64, i64) {
         let below_threshold = (v_.abs() | x_.abs()) <= THRESH;
         if !below_threshold || !(a > c && c > 0) {
             if below_threshold {
-                u = u_; v = v_; w = w_; x = x_;
+                u = u_;
+                v = v_;
+                w = w_;
+                x = x_;
             }
             break;
         }
@@ -196,7 +203,13 @@ mod tests {
         assert!(disc_check(&f, &d));
         reduce(&mut f);
         assert!(disc_check(&f, &d), "discriminant changed after reduction");
-        assert!(f.is_reduced(), "form not reduced: a={}, b={}, c={}", f.a, f.b, f.c);
+        assert!(
+            f.is_reduced(),
+            "form not reduced: a={}, b={}, c={}",
+            f.a,
+            f.b,
+            f.c
+        );
     }
 
     #[test]

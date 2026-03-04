@@ -2,12 +2,12 @@
 //!
 //! Port of chiavdf/src/verifier.h.
 
-use num_bigint::BigInt;
-use crate::form::Form;
-use crate::proof_common::{fast_pow, fast_pow_form_nucomp, get_b, deserialize_form, B_BYTES};
 use crate::bqfc::BQFC_FORM_SIZE;
-use crate::reducer::reduce;
+use crate::form::Form;
 use crate::nucomp::nucomp;
+use crate::proof_common::{deserialize_form, fast_pow, fast_pow_form_nucomp, get_b, B_BYTES};
+use crate::reducer::reduce;
+use num_bigint::BigInt;
 
 /// Verify a single Wesolowski segment.
 ///
@@ -37,13 +37,7 @@ pub fn verify_weso_segment(
 /// Verify a Wesolowski proof.
 ///
 /// Checks: proof^B * x^r == y
-pub fn verify_wesolowski_proof(
-    d: &BigInt,
-    x: &Form,
-    y: &Form,
-    proof: &Form,
-    iters: u64,
-) -> bool {
+pub fn verify_wesolowski_proof(d: &BigInt, x: &Form, y: &Form, proof: &Form, iters: u64) -> bool {
     let l = Form::compute_l(d);
     let mut x_mut = x.clone();
     let mut y_mut = y.clone();
@@ -102,14 +96,12 @@ pub fn check_proof_of_time_n_wesolowski(
     while i > base_len {
         i -= segment_len;
 
-        let segment_iters = u64::from_be_bytes(
-            proof_blob[i..i+8].try_into().unwrap()
-        );
+        let segment_iters = u64::from_be_bytes(proof_blob[i..i + 8].try_into().unwrap());
 
-        let b_bytes = &proof_blob[i+8..i+8+B_BYTES];
+        let b_bytes = &proof_blob[i + 8..i + 8 + B_BYTES];
         let b = crate::integer::from_bytes_be(b_bytes);
 
-        let proof_bytes = &proof_blob[i+8+B_BYTES..i+8+B_BYTES+form_size];
+        let proof_bytes = &proof_blob[i + 8 + B_BYTES..i + 8 + B_BYTES + form_size];
         let proof = match deserialize_form(d, proof_bytes) {
             Ok(f) => f,
             Err(_) => return false,
@@ -141,7 +133,7 @@ pub fn check_proof_of_time_n_wesolowski(
         Ok(f) => f,
         Err(_) => return false,
     };
-    let proof = match deserialize_form(d, &proof_blob[form_size..2*form_size]) {
+    let proof = match deserialize_form(d, &proof_blob[form_size..2 * form_size]) {
         Ok(f) => f,
         Err(_) => return false,
     };
@@ -153,8 +145,8 @@ pub fn check_proof_of_time_n_wesolowski(
 mod tests {
     use super::*;
     use crate::discriminant::create_discriminant;
-    use crate::proof_common::serialize_form;
     use crate::integer::num_bits;
+    use crate::proof_common::serialize_form;
 
     #[test]
     fn test_verify_basic_structure() {

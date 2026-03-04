@@ -2,12 +2,11 @@
 //!
 //! Port of chiavdf/src/nucomp.h (William Hart's algorithm).
 
-use num_bigint::BigInt;
-use num_integer::Integer;
-use num_traits::{Signed, Zero};
 use crate::form::Form;
-use crate::integer::{fdiv_q, fdiv_r, tdiv_r, divexact, fast_extended_gcd, fast_gcd_coeff_b};
+use crate::integer::{divexact, fast_extended_gcd, fast_gcd_coeff_b, fdiv_q, fdiv_r, tdiv_r};
 use crate::xgcd_partial::xgcd_partial;
+use num_bigint::BigInt;
+use num_traits::{Signed, Zero};
 
 /// Compose two forms: result = f * g.
 /// This is qfb_nucomp.
@@ -38,12 +37,10 @@ pub fn nucomp(f: &Form, g: &Form, d: &BigInt, l: &BigInt) -> Form {
     // k = m * v1 mod a1
     let mut k = fdiv_r(&(&m * &v1), &a1);
 
-    let s;
     let (a1_new, a2_new, c2_new);
 
     if sp != BigInt::from(1u32) {
-        let (s_val, v2, u2) = gcd_ext3(&ss, &sp);
-        s = s_val;
+        let (s, v2, u2) = gcd_ext3(&ss, &sp);
 
         // k = k * u2 - v2 * c2
         k = &k * &u2 - &v2 * &c2;
@@ -60,7 +57,6 @@ pub fn nucomp(f: &Form, g: &Form, d: &BigInt, l: &BigInt) -> Form {
 
         k = fdiv_r(&k, &a1_new);
     } else {
-        s = BigInt::from(1u32);
         a1_new = a1.clone();
         a2_new = a2.clone();
         c2_new = c2.clone();
@@ -98,7 +94,7 @@ pub fn nucomp(f: &Form, g: &Form, d: &BigInt, l: &BigInt) -> Form {
             ca_unsigned
         };
         // Make ca positive
-        let (mut ca, mut cc_sign) = if ca.is_negative() {
+        let (mut ca, _cc_sign) = if ca.is_negative() {
             (-ca, -1i32)
         } else {
             (ca, 1i32)
@@ -235,8 +231,8 @@ pub fn nudupl(f: &Form, d: &BigInt, l: &BigInt) -> Form {
 
         // cb = 2*(a1*r1 - new_a*co2)/co1 - f.b  (mod 2*new_a)
         // Mirrors C: cb=new_a*co2; submul(a1*r1); neg; *=2; divexact(co1); sub(b); fdiv_r(2*new_a)
-        let cb_tmp = &new_a * &co2 - &a1_new * &r1;  // = new_a*co2 - a1*r1
-        let cb_neg = -cb_tmp;                           // = a1*r1 - new_a*co2
+        let cb_tmp = &new_a * &co2 - &a1_new * &r1; // = new_a*co2 - a1*r1
+        let cb_neg = -cb_tmp; // = a1*r1 - new_a*co2
         let cb_doubled = &cb_neg << 1usize;
         let cb_div = divexact(&cb_doubled, &co1);
         let cb_pre = cb_div - &f.b;
@@ -281,9 +277,13 @@ mod tests {
         assert!(discriminant_ok(&f, &d));
         assert!(discriminant_ok(&g, &d));
         let result = nucomp(&f, &g, &d, &l);
-        assert!(discriminant_ok(&result, &d),
+        assert!(
+            discriminant_ok(&result, &d),
             "nucomp result has wrong discriminant: a={}, b={}, c={}",
-            result.a, result.b, result.c);
+            result.a,
+            result.b,
+            result.c
+        );
     }
 
     #[test]
@@ -293,8 +293,12 @@ mod tests {
         let f = Form::new(BigInt::from(2), BigInt::from(1), BigInt::from(6));
         assert!(discriminant_ok(&f, &d));
         let result = nudupl(&f, &d, &l);
-        assert!(discriminant_ok(&result, &d),
+        assert!(
+            discriminant_ok(&result, &d),
             "nudupl result has wrong discriminant: a={}, b={}, c={}",
-            result.a, result.b, result.c);
+            result.a,
+            result.b,
+            result.c
+        );
     }
 }

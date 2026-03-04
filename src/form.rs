@@ -1,10 +1,10 @@
 //! Quadratic form (a, b, c) with discriminant D, where b^2 - 4ac = D.
 //! Always in reduced form: |b| <= a <= c, with b >= 0 when a == c or |b| == a.
 
-use num_bigint::BigInt;
-use num_traits::{One, Zero};
 use crate::integer::{divexact, num_bits};
 use crate::reducer::reduce;
+use num_bigint::BigInt;
+use num_traits::{One, Zero};
 
 /// A binary quadratic form with coefficients (a, b, c) and discriminant D.
 #[derive(Clone, Debug)]

@@ -1,12 +1,21 @@
-use std::time::Instant;
 use num_traits::Signed;
+use std::time::Instant;
 
 fn time_fn<F: Fn()>(name: &str, n: u32, f: F) {
-    for _ in 0..3 { f(); }
+    for _ in 0..3 {
+        f();
+    }
     let t0 = Instant::now();
-    for _ in 0..n { f(); }
+    for _ in 0..n {
+        f();
+    }
     let elapsed = t0.elapsed();
-    println!("{:<45} {:>8.1} µs/call  (n={})", name, elapsed.as_micros() as f64 / n as f64, n);
+    println!(
+        "{:<45} {:>8.1} µs/call  (n={})",
+        name,
+        elapsed.as_micros() as f64 / n as f64,
+        n
+    );
 }
 
 fn main() {
@@ -15,7 +24,10 @@ fn main() {
     use num_traits::Zero;
 
     fn hex_decode(s: &str) -> Vec<u8> {
-        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i+2], 16).unwrap()).collect()
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
     }
 
     let d = -integer::from_bytes_be(&hex_decode("d0cb181074454b32a0e0fc5e65a1d7625ea43756eaa8de13a9c750c79f7aa60151f065cd5775516159c28713c1e74ced6520f8f5c55129f32f865b28cf7fe8e7"));
@@ -24,20 +36,28 @@ fn main() {
 
     let x = proof_common::deserialize_form(&d, &x_s).unwrap();
     let y = proof_common::deserialize_form(&d, &p_blob[..bqfc::BQFC_FORM_SIZE]).unwrap();
-    let mut xm = x.clone(); let mut ym = y.clone();
+    let mut xm = x.clone();
+    let mut ym = y.clone();
     let b = proof_common::get_b(&d, &mut xm, &mut ym);
     let l = form::Form::compute_l(&d);
     let r = proof_common::fast_pow(100, &b);
 
     println!("=== Timing breakdown (512-bit disc, iters=100) ===");
-    println!("B bits = {}, r bits = {}", integer::num_bits(&b), integer::num_bits(&r));
+    println!(
+        "B bits = {}, r bits = {}",
+        integer::num_bits(&b),
+        integer::num_bits(&r)
+    );
 
     time_fn("full verify (iters=100)", 300, || {
-        assert!(verifier::check_proof_of_time_n_wesolowski(&d, &x_s, &p_blob, 100, 0));
+        assert!(verifier::check_proof_of_time_n_wesolowski(
+            &d, &x_s, &p_blob, 100, 0
+        ));
     });
 
     time_fn("get_b (2x hash_prime + serialize)", 1000, || {
-        let mut xm = x.clone(); let mut ym = y.clone();
+        let mut xm = x.clone();
+        let mut ym = y.clone();
         std::hint::black_box(proof_common::get_b(&d, &mut xm, &mut ym));
     });
 
@@ -70,8 +90,10 @@ fn main() {
     });
 
     time_fn("xgcd_partial (512-bit r2, 264-bit r1)", 20000, || {
-        let mut co2 = BigInt::zero(); let mut co1 = BigInt::zero();
-        let mut r2 = d.abs(); let mut r1 = b.clone();
+        let mut co2 = BigInt::zero();
+        let mut co1 = BigInt::zero();
+        let mut r2 = d.abs();
+        let mut r1 = b.clone();
         xgcd_partial::xgcd_partial(&mut co2, &mut co1, &mut r2, &mut r1, &l);
         std::hint::black_box((co2, co1));
     });

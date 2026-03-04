@@ -5,10 +5,10 @@
 //! On exit: co2*r1_orig - co1*r2_orig = ±r2_final
 //! Terminates when r1 <= L.
 
+use crate::integer::{bitlen_nonneg, extract_uword_from_shift_nonneg, LIMB_BITS};
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{Signed, Zero};
-use crate::integer::{bitlen_nonneg, extract_uword_from_shift_nonneg, LIMB_BITS};
 
 /// Partial extended GCD.
 /// Inputs: r2, r1, L (all non-negative, r2 >= r1).
@@ -16,10 +16,13 @@ use crate::integer::{bitlen_nonneg, extract_uword_from_shift_nonneg, LIMB_BITS};
 ///   - r1 <= L (termination condition)
 ///   - co2*r1_in - co1*r2_in = ±r2_out  (approximately)
 ///   - r2_out >= 0
-pub fn xgcd_partial(co2: &mut BigInt, co1: &mut BigInt,
-                    r2: &mut BigInt, r1: &mut BigInt,
-                    l: &BigInt)
-{
+pub fn xgcd_partial(
+    co2: &mut BigInt,
+    co1: &mut BigInt,
+    r2: &mut BigInt,
+    r1: &mut BigInt,
+    l: &BigInt,
+) {
     *co2 = BigInt::from(0u32);
     *co1 = BigInt::from(-1i32);
 
@@ -31,7 +34,7 @@ pub fn xgcd_partial(co2: &mut BigInt, co1: &mut BigInt,
 
         let mut rr2 = extract_uword_from_shift_nonneg(r2, bits);
         let mut rr1 = extract_uword_from_shift_nonneg(r1, bits);
-        let bb  = extract_uword_from_shift_nonneg(l, bits);
+        let bb = extract_uword_from_shift_nonneg(l, bits);
 
         let mut aa2: i64 = 0;
         let mut aa1: i64 = 1;
@@ -59,9 +62,12 @@ pub fn xgcd_partial(co2: &mut BigInt, co1: &mut BigInt,
                 }
             }
 
-            rr2 = rr1; rr1 = t1;
-            aa2 = aa1; aa1 = t2;
-            bb2 = bb1; bb1 = t3;
+            rr2 = rr1;
+            rr1 = t1;
+            aa2 = aa1;
+            aa1 = t2;
+            bb2 = bb1;
+            bb1 = t3;
             i += 1;
         }
 

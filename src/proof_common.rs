@@ -2,14 +2,14 @@
 //!
 //! Port of chiavdf/src/proof_common.h.
 
-use num_bigint::BigInt;
-use num_traits::Zero;
+use crate::bqfc::{deserialize, serialize};
 use crate::form::Form;
-use crate::bqfc::{serialize, deserialize};
+use crate::integer::{modpow, num_bits};
+use crate::nucomp::{nucomp, nudupl};
 use crate::primetest::hash_prime;
 use crate::reducer::reduce;
-use crate::nucomp::{nucomp, nudupl};
-use crate::integer::{modpow, num_bits};
+use num_bigint::BigInt;
+use num_traits::Zero;
 
 /// B_bits = 264
 pub const B_BITS: usize = 264;
@@ -60,12 +60,7 @@ pub fn get_b(d: &BigInt, x: &mut Form, y: &mut Form) -> BigInt {
 
 /// Exponentiate a form by num_iterations using binary method with nucomp/nudupl.
 /// This is FastPowFormNucomp.
-pub fn fast_pow_form_nucomp(
-    x: &Form,
-    d: &BigInt,
-    num_iterations: &BigInt,
-    l: &BigInt,
-) -> Form {
+pub fn fast_pow_form_nucomp(x: &Form, d: &BigInt, num_iterations: &BigInt, l: &BigInt) -> Form {
     if num_iterations.is_zero() {
         return Form::identity(d);
     }

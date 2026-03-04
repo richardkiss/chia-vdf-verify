@@ -10,13 +10,11 @@
 //!   g_size+1 bytes: g
 //!   g_size+1 bytes: b0
 
+use crate::integer::{divexact, fdiv_r, from_bytes_le, isqrt, tdiv_q, to_bytes_le_padded};
+use crate::xgcd_partial::xgcd_partial;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{Signed, Zero};
-use crate::integer::{
-    from_bytes_le, to_bytes_le_padded, divexact, fdiv_r, tdiv_q, isqrt,
-};
-use crate::xgcd_partial::xgcd_partial;
 
 /// Size of the serialized form (100 bytes for 1024-bit max discriminant).
 pub const BQFC_FORM_SIZE: usize = (1024 + 31) / 32 * 3 + 4;
@@ -24,7 +22,7 @@ pub const BQFC_FORM_SIZE: usize = (1024 + 31) / 32 * 3 + 4;
 /// Flag bits
 const BQFC_B_SIGN: u8 = 1 << 0;
 const BQFC_T_SIGN: u8 = 1 << 1;
-const BQFC_IS_1: u8   = 1 << 2;
+const BQFC_IS_1: u8 = 1 << 2;
 const BQFC_IS_GEN: u8 = 1 << 3;
 
 /// Compressed form intermediate representation.
@@ -104,7 +102,11 @@ fn bqfc_decompr(d: &BigInt, c: &QfbC) -> Result<(BigInt, BigInt), String> {
     if egcd.gcd != BigInt::from(1u32) {
         return Err(format!("bqfc_decompr: gcd(t, a) = {} != 1", egcd.gcd));
     }
-    let t_inv = if egcd.x.is_negative() { egcd.x + &c.a } else { egcd.x };
+    let t_inv = if egcd.x.is_negative() {
+        egcd.x + &c.a
+    } else {
+        egcd.x
+    };
 
     // d_mod_a = D mod a
     let d_mod_a = fdiv_r(d, &c.a);
@@ -153,7 +155,11 @@ pub fn serialize(a: &BigInt, b: &BigInt, d_bits: usize) -> Vec<u8> {
 
     // Special cases: identity (1,1) and generator (2,1)
     if b == &BigInt::from(1u32) && a <= &BigInt::from(2u32) {
-        out[0] = if a == &BigInt::from(2u32) { BQFC_IS_GEN } else { BQFC_IS_1 };
+        out[0] = if a == &BigInt::from(2u32) {
+            BQFC_IS_GEN
+        } else {
+            BQFC_IS_1
+        };
         return out;
     }
 
@@ -163,8 +169,12 @@ pub fn serialize(a: &BigInt, b: &BigInt, d_bits: usize) -> Vec<u8> {
 
     let mut buf = Vec::with_capacity(valid_size);
     let mut flags = 0u8;
-    if c.b_sign { flags |= BQFC_B_SIGN; }
-    if c.t.is_negative() { flags |= BQFC_T_SIGN; }
+    if c.b_sign {
+        flags |= BQFC_B_SIGN;
+    }
+    if c.t.is_negative() {
+        flags |= BQFC_T_SIGN;
+    }
 
     let g_size = if c.g.is_zero() {
         0usize
@@ -178,7 +188,11 @@ pub fn serialize(a: &BigInt, b: &BigInt, d_bits: usize) -> Vec<u8> {
     buf.push(g_size as u8);
 
     export_le(&mut buf, &c.a, d_bits_rounded / 16 - g_size);
-    let t_abs = if c.t.is_negative() { -c.t.clone() } else { c.t.clone() };
+    let t_abs = if c.t.is_negative() {
+        -c.t.clone()
+    } else {
+        c.t.clone()
+    };
     export_le(&mut buf, &t_abs, d_bits_rounded / 32 - g_size);
     export_le(&mut buf, &c.g, g_size + 1);
     export_le(&mut buf, &c.b0, g_size + 1);
@@ -193,12 +207,20 @@ pub fn serialize(a: &BigInt, b: &BigInt, d_bits: usize) -> Vec<u8> {
 /// Returns (a, b) or error string.
 pub fn deserialize(d: &BigInt, data: &[u8]) -> Result<(BigInt, BigInt), String> {
     if data.len() != BQFC_FORM_SIZE {
-        return Err(format!("expected {} bytes, got {}", BQFC_FORM_SIZE, data.len()));
+        return Err(format!(
+            "expected {} bytes, got {}",
+            BQFC_FORM_SIZE,
+            data.len()
+        ));
     }
 
     // Check special forms
     if data[0] & (BQFC_IS_1 | BQFC_IS_GEN) != 0 {
-        let a = if data[0] & BQFC_IS_GEN != 0 { BigInt::from(2u32) } else { BigInt::from(1u32) };
+        let a = if data[0] & BQFC_IS_GEN != 0 {
+            BigInt::from(2u32)
+        } else {
+            BigInt::from(1u32)
+        };
         return Ok((a, BigInt::from(1u32)));
     }
 
@@ -229,7 +251,13 @@ pub fn deserialize(d: &BigInt, data: &[u8]) -> Result<(BigInt, BigInt), String> 
     let t_sign = data[0] & BQFC_T_SIGN != 0;
     let t = if t_sign { -t_raw } else { t_raw };
 
-    let c = QfbC { a, t, g, b0, b_sign };
+    let c = QfbC {
+        a,
+        t,
+        g,
+        b0,
+        b_sign,
+    };
 
     let (out_a, out_b) = bqfc_decompr(d, &c)?;
 
@@ -251,8 +279,8 @@ pub fn bqfc_get_compr_size(d_bits: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::form::Form;
     use crate::discriminant::create_discriminant;
+    use crate::form::Form;
     use crate::reducer::reduce;
 
     #[test]
