@@ -1,6 +1,6 @@
 //! BigInt wrapper with GMP-compatible operations.
 
-use num_bigint::{BigInt, BigUint, Sign};
+use num_bigint::{BigInt, Sign};
 use num_integer::Integer;
 use num_traits::{One, Signed, Zero};
 
@@ -194,7 +194,7 @@ pub fn extract_uword_from_shift_nonneg(x: &BigInt, shift_bits: i64) -> i64 {
         return digits.first().copied().unwrap_or(0) as i64;
     }
     let shifted = x.magnitude() >> shift_bits as usize;
-    let digits = BigUint::from(shifted).to_u64_digits();
+    let digits = shifted.to_u64_digits();
     digits.first().copied().unwrap_or(0) as i64
 }
 
@@ -347,10 +347,8 @@ fn lehmer_inner_loop(r0: &BigInt, r1: &BigInt) -> (i64, i64, i64, i64, usize) {
             if t1_ < -tq || rr1 - t1_ < tp - p {
                 break;
             }
-        } else {
-            if t1_ < -tp || rr1 - t1_ < tq - q {
-                break;
-            }
+        } else if t1_ < -tp || rr1 - t1_ < tq - q {
+            break;
         }
         rr0 = rr1;
         rr1 = t1_;
@@ -370,7 +368,7 @@ fn extract_word_unsigned(n: &BigInt, shift: usize) -> i64 {
         return digits.first().copied().unwrap_or(0) as i64;
     }
     let shifted = n.magnitude() >> shift;
-    let digits = BigUint::from(shifted).to_u64_digits();
+    let digits = shifted.to_u64_digits();
     digits.first().copied().unwrap_or(0) as i64
 }
 

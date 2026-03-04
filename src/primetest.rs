@@ -126,8 +126,8 @@ fn find_lucas_v(e: &BigInt, m: &BigInt, p: i64, q: i64) -> BigInt {
     }
 
     // V1 = 2*U2 - P*U1
-    let v1 = BigInt::from(2) * &u2 - BigInt::from(p) * &u1;
-    v1
+
+    BigInt::from(2) * &u2 - BigInt::from(p) * &u1
 }
 
 /// BPSW primality test.
@@ -169,7 +169,7 @@ pub fn is_prime_bpsw(n: &BigInt) -> bool {
 /// Uses iterative SHA256 to expand seed, then applies bitmask and tests primality.
 /// Matches chiavdf's HashPrime(seed, length, bitmask).
 pub fn hash_prime(seed: &[u8], length: usize, bitmask: &[usize]) -> BigInt {
-    assert!(length % 8 == 0, "length must be multiple of 8");
+    assert!(length.is_multiple_of(8), "length must be multiple of 8");
     let byte_len = length / 8;
 
     let mut sprout = seed.to_vec();
@@ -230,7 +230,7 @@ mod tests {
         for &c in &[9u64, 15, 21, 25, 35, 49, 77, 91] {
             let n = BigInt::from(c);
             // Most composites will fail, though some are strong pseudoprimes
-            let result = miller_rabin(&n, &base2);
+            let _result = miller_rabin(&n, &base2);
             // 341 is the first strong pseudoprime to base 2; our list doesn't include it
             // Just test that 9 fails
         }

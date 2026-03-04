@@ -17,7 +17,7 @@ use num_integer::Integer;
 use num_traits::{Signed, Zero};
 
 /// Size of the serialized form (100 bytes for 1024-bit max discriminant).
-pub const BQFC_FORM_SIZE: usize = (1024 + 31) / 32 * 3 + 4;
+pub const BQFC_FORM_SIZE: usize = 1024_usize.div_ceil(32) * 3 + 4;
 
 /// Flag bits
 const BQFC_B_SIGN: u8 = 1 << 0;
@@ -180,7 +180,7 @@ pub fn serialize(a: &BigInt, b: &BigInt, d_bits: usize) -> Vec<u8> {
         0usize
     } else {
         let bits = c.g.bits() as usize;
-        (bits + 7) / 8
+        bits.div_ceil(8)
     };
     let g_size = if g_size == 0 { 0 } else { g_size - 1 };
 
@@ -279,9 +279,6 @@ pub fn bqfc_get_compr_size(d_bits: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::discriminant::create_discriminant;
-    use crate::form::Form;
-    use crate::reducer::reduce;
 
     #[test]
     fn test_bqfc_form_size() {

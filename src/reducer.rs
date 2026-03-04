@@ -168,7 +168,7 @@ fn calc_uvwx(mut a: i64, mut b: i64, mut c: i64) -> (i64, i64, i64, i64) {
         x_ = -w + s.wrapping_mul(x);
 
         let below_threshold = (v_.abs() | x_.abs()) <= THRESH;
-        if !below_threshold || !(a > c && c > 0) {
+        if !(below_threshold && a > c && c > 0) {
             if below_threshold {
                 u = u_;
                 v = v_;
@@ -187,7 +187,6 @@ mod tests {
     use super::*;
     use crate::form::Form;
     use num_bigint::BigInt;
-    use num_traits::Zero;
 
     fn disc_check(f: &Form, d: &BigInt) -> bool {
         let disc = &f.b * &f.b - BigInt::from(4) * &f.a * &f.c;
@@ -215,8 +214,8 @@ mod tests {
     #[test]
     fn test_reduce_idempotent() {
         let d = BigInt::from(-47i64);
-        let mut f = Form::new(BigInt::from(5), BigInt::from(3), BigInt::from(3));
-        let disc = &f.b * &f.b - BigInt::from(4) * &f.a * &f.c;
+        let f = Form::new(BigInt::from(5), BigInt::from(3), BigInt::from(3));
+        let _disc = &f.b * &f.b - BigInt::from(4) * &f.a * &f.c;
         // 9 - 60 = -51, not -47. Let's use a form that's actually valid
         // Form (5, 1, c) where c = (1+47)/20 = 48/20 is not integer...
         // Use (2, 1, 6): disc = 1 - 48 = -47

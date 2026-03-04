@@ -145,8 +145,6 @@ pub fn check_proof_of_time_n_wesolowski(
 mod tests {
     use super::*;
     use crate::discriminant::create_discriminant;
-    use crate::integer::num_bits;
-    use crate::proof_common::serialize_form;
 
     #[test]
     fn test_verify_basic_structure() {

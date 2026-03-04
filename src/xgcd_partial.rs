@@ -56,10 +56,8 @@ pub fn xgcd_partial(
                 if t1 < -t3 || rr1 - t1 < t2 - aa1 {
                     break;
                 }
-            } else {
-                if t1 < -t2 || rr1 - t1 < t3 - bb1 {
-                    break;
-                }
+            } else if t1 < -t2 || rr1 - t1 < t3 - bb1 {
+                break;
             }
 
             rr2 = rr1;

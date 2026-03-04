@@ -14,7 +14,7 @@ use num_traits::Zero;
 /// B_bits = 264
 pub const B_BITS: usize = 264;
 /// B_bytes = 33
-pub const B_BYTES: usize = (B_BITS + 7) / 8;
+pub const B_BYTES: usize = B_BITS.div_ceil(8);
 
 /// Compute 2^b mod c.
 /// This is FastPow(2, b, c) in C.
@@ -75,16 +75,16 @@ pub fn fast_pow_form_nucomp(x: &Form, d: &BigInt, num_iterations: &BigInt, l: &B
     // The C code only reduces lazily when a's size exceeds half the discriminant's limb count.
     // For correctness in this prototype, we reduce after every step.
     let do_lazy_reduce = {
-        let d_limbs = (num_bits(d) + 63) / 64;
-        let max_size = d_limbs / 2;
-        max_size
+        let d_limbs = num_bits(d).div_ceil(64);
+
+        d_limbs / 2
     };
 
     for i in (0..n_bits.saturating_sub(1)).rev() {
         res = nudupl(&res, d, l);
 
         // Lazy reduction: reduce only when a's bit size exceeds threshold
-        let a_limbs = (num_bits(&res.a) + 63) / 64;
+        let a_limbs = num_bits(&res.a).div_ceil(64);
         if a_limbs > do_lazy_reduce {
             reduce(&mut res);
         }

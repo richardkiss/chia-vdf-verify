@@ -15,7 +15,7 @@ use num_bigint::BigInt;
 ///   - bit length-1: sets the MSB to ensure exact bit length
 pub fn create_discriminant(seed: &[u8], length: usize) -> BigInt {
     assert!(
-        length > 0 && length % 8 == 0,
+        length > 0 && length.is_multiple_of(8),
         "length must be positive multiple of 8"
     );
     let bitmask = vec![0usize, 1, 2, length - 1];
