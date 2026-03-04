@@ -29,7 +29,13 @@ python = ["pyo3"]
 [dev-dependencies]
 hex = "0.4"
 criterion = { version = "0.5", features = ["html_reports"] }
+malachite-nz = "0.9"
+malachite-base = "0.9"
 
 [[bench]]
 name = "verify"
+harness = false
+
+[[bench]]
+name = "bigint_compare"
 harness = false
