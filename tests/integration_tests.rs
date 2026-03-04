@@ -363,3 +363,85 @@ fn test_corrupted_proof_fails() {
     let result = check_proof_of_time_n_wesolowski(&d, &x_s, &proof_blob, ITERS, 0);
     assert!(!result, "corrupted proof should fail verification");
 }
+
+// ---------------------------------------------------------------------------
+// vdf.txt stress-test vectors from chiavdf (1024-bit discriminant, depth 0..7)
+// ---------------------------------------------------------------------------
+
+const VDF_TXT: &str = include_str!("fixtures/vdf.txt");
+
+struct VdfVec<'a> {
+    challenge: &'a str,
+    disc_bits: usize,
+    input: &'a str,
+    proof: &'a str,
+    iters: u64,
+    depth: u64,
+}
+
+fn parse_vdf_txt(content: &str) -> Vec<VdfVec<'_>> {
+    let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+    let mut out = Vec::new();
+    for chunk in lines.chunks(6) {
+        if chunk.len() < 6 {
+            continue;
+        }
+        out.push(VdfVec {
+            challenge: chunk[0],
+            disc_bits: chunk[1].parse().unwrap(),
+            input: chunk[2],
+            proof: chunk[3],
+            iters: chunk[4].parse().unwrap(),
+            depth: chunk[5].parse().unwrap(),
+        });
+    }
+    out
+}
+
+fn verify_vdf_vec(v: &VdfVec<'_>) -> bool {
+    let challenge = hex_decode(v.challenge);
+    let d = create_discriminant(&challenge, v.disc_bits);
+    let input = hex_decode(v.input);
+    let proof = hex_decode(v.proof);
+    check_proof_of_time_n_wesolowski(&d, &input, &proof, v.iters, v.depth)
+}
+
+/// Fast smoke test: one depth=0 and one depth=2 vector from vdf.txt.
+/// Exercises the 1024-bit discriminant path in ~35 ms (release) per vector.
+#[test]
+fn test_vdf_txt_sample() {
+    let vecs = parse_vdf_txt(VDF_TXT);
+
+    let d0 = vecs.iter().find(|v| v.depth == 0).expect("depth=0 vector");
+    assert!(verify_vdf_vec(d0), "depth=0 vector failed");
+
+    let d2 = vecs.iter().find(|v| v.depth == 2).expect("depth=2 vector");
+    assert!(verify_vdf_vec(d2), "depth=2 vector failed");
+}
+
+/// Full vdf.txt test suite — all 110 vectors (depth 0..7, 1024-bit discriminant).
+/// Skipped by default due to runtime (~15 s release / ~70 s debug).
+/// Run with: cargo test --release -- --ignored test_vdf_txt_all
+#[test]
+#[ignore]
+fn test_vdf_txt_all() {
+    let vecs = parse_vdf_txt(VDF_TXT);
+    let mut passed = 0;
+    let mut failed = 0;
+
+    for v in &vecs {
+        if verify_vdf_vec(v) {
+            passed += 1;
+        } else {
+            failed += 1;
+            eprintln!(
+                "FAIL depth={} iters={} challenge={}...",
+                v.depth,
+                v.iters,
+                &v.challenge[..12]
+            );
+        }
+    }
+
+    assert_eq!(failed, 0, "{}/{} vectors failed", failed, passed + failed);
+}

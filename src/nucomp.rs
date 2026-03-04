@@ -87,71 +87,36 @@ pub fn nucomp(f: &Form, g: &Form, d: &BigInt, l: &BigInt) -> Form {
         let m2 = divexact(&(&ss * &r1 - &c2_new * &co1), &a1_new);
 
         // ca = -sgn(co1) * (r1*m1 - co1*m2)
+        // Note: ca may be negative here; cb must be computed before ca is made positive.
         let ca_unsigned = &r1 * &m1 - &co1 * &m2;
-        let ca = if co1.is_negative() {
-            -ca_unsigned
+        let mut ca = if co1.is_negative() {
+            ca_unsigned // -sgn(co1) = +1
         } else {
-            ca_unsigned
-        };
-        // Make ca positive
-        let (mut ca, _cc_sign) = if ca.is_negative() {
-            (-ca, -1i32)
-        } else {
-            (ca, 1i32)
+            -ca_unsigned // -sgn(co1) = -1
         };
 
-        // t_val was a2_new * r1 in the numerator above — actually t is used for cb
-        // t = a2_new * r1 (from m1 computation context, but here we need the original t)
-        // Looking at C code: cb = (2 * (t - ca*co2) / co1 - g->b) % (2*ca)
-        // where t was used as m*co1 + a2*r1 before / a1. But in C, t is a local temp.
-        // In the C nucomp code:
-        //   mpz_mul(t, a2, r1);          -- this is the `t` used in cb computation
-        //   ...but m1 already divides by a1. So t_for_cb = a2_new * r1? No wait.
-        // Re-reading C code carefully:
-        // After the xgcd_partial block:
-        //   mpz_mul(t, a2, r1);         -- t = a2*r1
-        //   mpz_mul(m1, m, co1);        -- m1 = m*co1
-        //   mpz_add(m1, m1, t);         -- m1 = m*co1 + a2*r1
-        //   mpz_divexact(m1, m1, a1);   -- m1 = (m*co1 + a2*r1) / a1
-        //   mpz_mul(m2, ss, r1);        -- m2 = ss*r1
-        //   mpz_mul(temp, c2, co1);     -- temp = c2*co1
-        //   mpz_sub(m2, m2, temp);      -- m2 = ss*r1 - c2*co1
-        //   mpz_divexact(m2, m2, a1);   -- m2 = (ss*r1 - c2*co1) / a1
-        // NOTE: at line `mpz_mul(t, a2, r1)`, `t` is set. Then:
-        //   t is a2*r1 (used for m1 but also needs to persist for cb)
-        //   Actually `t` is local in the C code and used for cb below:
-        // Wait - in C nucomp, the variable `t` IS a2*r1 after the m1 computation.
-        // Let me look again...
-        // In qfb_nucomp: `t` appears to be `a2 * r1` (as set in `mpz_mul(t, a2, r1)`)
-        // But then `mpz_add(m1, m1, t)` uses t. After that, t is reused in cb:
-        // `mpz_mul(cb, ca, co2)` then `mpz_sub(cb, t, cb)` -- so cb_before = a2*r1 - ca*co2
-        // Wait that can't be right either since t was overwritten in m1 computation...
-        // Actually no: in C the order is:
-        //   mpz_mul(t, a2, r1)  -> t = a2*r1
-        //   mpz_mul(m1, m, co1) -> m1 = m*co1
-        //   mpz_add(m1, m1, t)  -> m1 = m*co1 + a2*r1  (m1 is separate from t)
-        //   mpz_divexact(m1,...)
-        //   then m2...
-        //   then ca computation...
-        //   then: mpz_mul(cb, ca, co2); mpz_sub(cb, t, cb)
-        //   t is STILL a2*r1 here! Good.
-        // So for cb: cb_inner = a2_new * r1 - ca * co2
+        // t = a2_new * r1 (preserved for cb computation, matching C's local `t`)
         let t_val = &a2_new * &r1;
-        // cb = (2 * (t_val - ca*co2) / co1 - g.b) mod (2*ca)
+
+        // cb = (2*(t - ca*co2)/co1 - g.b) mod (2*ca)  [ca may be negative]
         let cb_inner = &t_val - &ca * &co2;
         let cb_scaled = &cb_inner << 1usize;
         let cb_divided = divexact(&cb_scaled, &co1);
         let cb_shifted = cb_divided - &g.b;
-        let ca2 = &ca << 1usize;
+        let ca2 = &ca << 1usize; // may be negative; fdiv_r honors sign of modulus
         let cb = fdiv_r(&cb_shifted, &ca2);
 
         // cc = (cb^2 - D) / (4*ca)
+        // Use 4*ca as the divisor (exact since b^2 ≡ D mod 4a for valid class-group forms).
+        // ca may be negative here; fdiv_r already used the signed ca above.
         let cc_num = &cb * &cb - d;
-        let cc_denom = &ca << 2usize;
-        let cc = divexact(&cc_num, &cc_denom);
+        let cc_denom = &ca << 2usize; // 4*ca, may be negative
+        let mut cc = divexact(&cc_num, &cc_denom);
 
+        // Make ca positive; negate cc to keep the form equation b^2 - 4ac = D valid.
         if ca.is_negative() {
             ca = -ca;
+            cc = -cc;
         }
 
         Form::new(ca, cb, cc)
