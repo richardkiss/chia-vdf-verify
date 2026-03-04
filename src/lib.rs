@@ -8,3 +8,6 @@ pub mod proof_common;
 pub mod reducer;
 pub mod verifier;
 pub mod xgcd_partial;
+
+#[cfg(feature = "python")]
+pub mod python;

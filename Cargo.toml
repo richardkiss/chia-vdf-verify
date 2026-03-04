@@ -2,6 +2,18 @@
 name = "chia-vdf-verify"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
+description = "Pure-Rust Chia VDF proof verifier — no GMP, no C dependencies"
+authors = ["Richard Kiss <him@richardkiss.com>"]
+homepage = "https://github.com/richardkiss/chia-vdf-verify"
+repository = "https://github.com/richardkiss/chia-vdf-verify"
+readme = "README.md"
+keywords = ["chia", "vdf", "verifiable-delay-function", "wesolowski"]
+categories = ["cryptography"]
+
+[lib]
+name = "chia_vdf_verify"
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 num-bigint = { version = "0.4", features = ["rand"] }
@@ -9,6 +21,10 @@ num-traits = "0.2"
 num-integer = "0.1"
 sha2 = "0.10"
 ibig = "0.3.6"
+pyo3 = { version = "0.23", features = ["extension-module"], optional = true }
+
+[features]
+python = ["pyo3"]
 
 [dev-dependencies]
 hex = "0.4"
