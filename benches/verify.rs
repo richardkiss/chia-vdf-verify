@@ -1,7 +1,7 @@
 use chia_vdf_verify::integer::from_bytes_be;
 use chia_vdf_verify::verifier::check_proof_of_time_n_wesolowski;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use num_bigint::BigInt;
+use malachite_nz::integer::Integer;
 
 fn hex_decode(s: &str) -> Vec<u8> {
     (0..s.len())
@@ -20,8 +20,8 @@ const D2_HEX: &str = "c3ef34d02017540ef26d88057bbfc778da12ed572b99f8707834ed3445
 const P2_HEX: &str = "030033205ea6d1ab367757073029f1462eb2fcc79749871d0b576f7a392adac84f56f46100e477d59353376f82a3eb56720d010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
 
 fn bench_verify(c: &mut Criterion) {
-    let d1: BigInt = -from_bytes_be(&hex_decode(D1_HEX));
-    let d2: BigInt = -from_bytes_be(&hex_decode(D2_HEX));
+    let d1: Integer = -from_bytes_be(&hex_decode(D1_HEX));
+    let d2: Integer = -from_bytes_be(&hex_decode(D2_HEX));
     let x_s = hex_decode(X_HEX);
     let p1 = hex_decode(P1_HEX);
     let p2 = hex_decode(P2_HEX);

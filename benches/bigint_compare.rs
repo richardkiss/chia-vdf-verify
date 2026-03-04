@@ -10,8 +10,9 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use malachite_base::num::arithmetic::traits::{ExtendedGcd, ModPow};
 use malachite_base::num::basic::traits::Zero;
+use malachite_nz::integer::Integer as MalachiteInteger;
 use malachite_nz::natural::Natural;
-use num_bigint::{BigInt, BigUint, Sign};
+use num_bigint::BigUint;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -24,17 +25,27 @@ fn nat_from_be_bytes(bytes: &[u8]) -> Natural {
     n
 }
 
+fn mal_int_from_be_bytes(bytes: &[u8]) -> MalachiteInteger {
+    MalachiteInteger::from(nat_from_be_bytes(bytes))
+}
+
 fn biguint_from_be_bytes(bytes: &[u8]) -> BigUint {
     BigUint::from_bytes_be(bytes)
 }
 
-fn bigint_from_be_bytes(bytes: &[u8]) -> BigInt {
-    BigInt::from_bytes_be(Sign::Plus, bytes)
-}
-
 /// Build (base, exponent, modulus) at `bits` bit-size as pseudo-random byte patterns.
-/// Returns (num-bigint triple, malachite triple).
-fn make_numbers(bits: usize) -> (BigUint, BigUint, BigUint, Natural, Natural, Natural) {
+fn make_numbers(
+    bits: usize,
+) -> (
+    BigUint,
+    BigUint,
+    BigUint,
+    Natural,
+    Natural,
+    Natural,
+    MalachiteInteger,
+    MalachiteInteger,
+) {
     let byte_len = bits / 8;
     let base_bytes: Vec<u8> = (0..byte_len)
         .map(|i| ((i.wrapping_mul(97).wrapping_add(17)) & 0xff) as u8)
@@ -45,8 +56,8 @@ fn make_numbers(bits: usize) -> (BigUint, BigUint, BigUint, Natural, Natural, Na
     let mut mod_bytes: Vec<u8> = (0..byte_len)
         .map(|i| ((i.wrapping_mul(173).wrapping_add(53)) & 0xff) as u8)
         .collect();
-    mod_bytes[0] |= 0x80; // ensure high bit set → correct bit width
-    mod_bytes[byte_len - 1] |= 0x01; // ensure odd
+    mod_bytes[0] |= 0x80;
+    mod_bytes[byte_len - 1] |= 0x01;
 
     let b_base = biguint_from_be_bytes(&base_bytes);
     let b_exp = biguint_from_be_bytes(&exp_bytes);
@@ -58,7 +69,10 @@ fn make_numbers(bits: usize) -> (BigUint, BigUint, BigUint, Natural, Natural, Na
     let m_mod = nat_from_be_bytes(&mod_bytes);
     let m_base_r = &m_base % &m_mod;
 
-    (b_base_r, b_exp, b_mod, m_base_r, m_exp, m_mod)
+    let mi_a = mal_int_from_be_bytes(&base_bytes);
+    let mi_b = mal_int_from_be_bytes(&exp_bytes);
+
+    (b_base_r, b_exp, b_mod, m_base_r, m_exp, m_mod, mi_a, mi_b)
 }
 
 // ── modpow ─────────────────────────────────────────────────────────────────────
@@ -67,27 +81,19 @@ fn bench_modpow(c: &mut Criterion) {
     let mut group = c.benchmark_group("modpow");
 
     for bits in [256usize, 512, 1024] {
-        let (b_base, b_exp, b_mod, m_base, m_exp, m_mod) = make_numbers(bits);
+        let (b_base, b_exp, b_mod, m_base, m_exp, m_mod, _, _) = make_numbers(bits);
 
-        group.bench_with_input(
-            BenchmarkId::new("num-bigint", bits),
-            &bits,
-            |b, _| {
-                b.iter(|| {
-                    black_box(b_base.modpow(&b_exp, &b_mod));
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("num-bigint", bits), &bits, |b, _| {
+            b.iter(|| {
+                black_box(b_base.modpow(&b_exp, &b_mod));
+            });
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("malachite", bits),
-            &bits,
-            |b, _| {
-                b.iter(|| {
-                    black_box((&m_base).mod_pow(&m_exp, &m_mod));
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("malachite", bits), &bits, |b, _| {
+            b.iter(|| {
+                black_box((&m_base).mod_pow(&m_exp, &m_mod));
+            });
+        });
     }
 
     group.finish();
@@ -109,27 +115,29 @@ fn bench_extended_gcd(c: &mut Criterion) {
         b_bytes[0] |= 0x80;
         b_bytes[byte_len - 1] |= 0x01;
 
-        let num_a = bigint_from_be_bytes(&a_bytes);
-        let num_b = bigint_from_be_bytes(&b_bytes);
-        let mal_a = nat_from_be_bytes(&a_bytes);
-        let mal_b = nat_from_be_bytes(&b_bytes);
+        let mal_a = mal_int_from_be_bytes(&a_bytes);
+        let mal_b = mal_int_from_be_bytes(&b_bytes);
 
+        // num-bigint fast_extended_gcd now takes malachite Integer (since the lib is ported)
         group.bench_with_input(
-            BenchmarkId::new("num-bigint (Lehmer)", bits),
+            BenchmarkId::new("malachite (built-in xgcd)", bits),
             &bits,
             |b, _| {
                 b.iter(|| {
-                    black_box(chia_vdf_verify::integer::fast_extended_gcd(&num_a, &num_b));
+                    black_box(chia_vdf_verify::integer::fast_extended_gcd(&mal_a, &mal_b));
                 });
             },
         );
 
+        let mal_a2 = nat_from_be_bytes(&a_bytes);
+        let mal_b2 = nat_from_be_bytes(&b_bytes);
+
         group.bench_with_input(
-            BenchmarkId::new("malachite", bits),
+            BenchmarkId::new("malachite (Natural xgcd)", bits),
             &bits,
             |b, _| {
                 b.iter(|| {
-                    black_box(mal_a.clone().extended_gcd(mal_b.clone()));
+                    black_box(mal_a2.clone().extended_gcd(mal_b2.clone()));
                 });
             },
         );
@@ -144,27 +152,19 @@ fn bench_multiply(c: &mut Criterion) {
     let mut group = c.benchmark_group("multiply");
 
     for bits in [256usize, 512, 1024] {
-        let (b_base, b_exp, _b_mod, m_base, m_exp, _m_mod) = make_numbers(bits);
+        let (b_base, b_exp, _b_mod, m_base, m_exp, _m_mod, _, _) = make_numbers(bits);
 
-        group.bench_with_input(
-            BenchmarkId::new("num-bigint", bits),
-            &bits,
-            |b, _| {
-                b.iter(|| {
-                    black_box(&b_base * &b_exp);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("num-bigint", bits), &bits, |b, _| {
+            b.iter(|| {
+                black_box(&b_base * &b_exp);
+            });
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("malachite", bits),
-            &bits,
-            |b, _| {
-                b.iter(|| {
-                    black_box(&m_base * &m_exp);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("malachite", bits), &bits, |b, _| {
+            b.iter(|| {
+                black_box(&m_base * &m_exp);
+            });
+        });
     }
 
     group.finish();
@@ -176,30 +176,21 @@ fn bench_divide(c: &mut Criterion) {
     let mut group = c.benchmark_group("divide");
 
     for bits in [256usize, 512, 1024] {
-        let (b_base, b_exp, _b_mod, m_base, m_exp, _m_mod) = make_numbers(bits);
-        // dividend is 2x larger than divisor
+        let (b_base, b_exp, _b_mod, m_base, m_exp, _m_mod, _, _) = make_numbers(bits);
         let b_dividend = &b_base * &b_exp;
         let m_dividend = &m_base * &m_exp;
 
-        group.bench_with_input(
-            BenchmarkId::new("num-bigint", bits),
-            &bits,
-            |b, _| {
-                b.iter(|| {
-                    black_box(&b_dividend / &b_exp);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("num-bigint", bits), &bits, |b, _| {
+            b.iter(|| {
+                black_box(&b_dividend / &b_exp);
+            });
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("malachite", bits),
-            &bits,
-            |b, _| {
-                b.iter(|| {
-                    black_box(&m_dividend / &m_exp);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("malachite", bits), &bits, |b, _| {
+            b.iter(|| {
+                black_box(&m_dividend / &m_exp);
+            });
+        });
     }
 
     group.finish();
@@ -222,12 +213,12 @@ fn bench_full_verify(c: &mut Criterion) {
     const X_HEX: &str  = "08000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
     const P1_HEX: &str = "020020417eb39c4e14954a817af644fc13d086c26dddab8afea12415b5e685f7883f5740ba01cb75220081c8aba7854cbd52010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
 
-    let d1: BigInt = -from_bytes_be(&hex_decode(D1_HEX));
+    let d1: MalachiteInteger = -from_bytes_be(&hex_decode(D1_HEX));
     let x_s = hex_decode(X_HEX);
     let p1 = hex_decode(P1_HEX);
 
     let mut group = c.benchmark_group("full_verify");
-    group.bench_function("num-bigint/iters=100", |b| {
+    group.bench_function("malachite/iters=100", |b| {
         b.iter(|| {
             let result = check_proof_of_time_n_wesolowski(&d1, &x_s, &p1, 100, 0);
             assert!(result);
