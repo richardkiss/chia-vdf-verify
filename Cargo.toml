@@ -1,0 +1,19 @@
+[package]
+name = "chia-vdf-verify"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+num-bigint = { version = "0.4", features = ["rand"] }
+num-traits = "0.2"
+num-integer = "0.1"
+sha2 = "0.10"
+ibig = "0.3.6"
+
+[dev-dependencies]
+hex = "0.4"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "verify"
+harness = false
