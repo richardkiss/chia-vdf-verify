@@ -340,6 +340,54 @@ fn test_corrupted_y_fails() {
     assert!(!result, "corrupted y should fail verification");
 }
 
+/// Flipping a padding byte of the y form triggers the BQFC canonical round-trip
+/// check and is rejected by the Rust verifier.
+///
+/// For a 512-bit discriminant the active BQFC region is 52 bytes
+/// (2 header + 32 a + 16 t + 1 g + 1 b0); bytes 52–99 must be zero.
+/// The Rust deserializer re-serializes the decoded form and checks it matches
+/// the input byte-for-byte — any deviation is rejected as non-canonical.
+///
+/// chiavdf's C++ decoder does not perform this round-trip check and ignores
+/// bytes beyond the active region.  This is the discrepancy found by
+/// differential fuzzing (scripts/differential_fuzz.py).
+#[test]
+fn test_non_canonical_y_padding_rejected() {
+    let d = get_discriminant();
+    let x_s = hex_decode(X_S_HEX);
+    let mut proof_blob = hex_decode(PROOF_BLOB_HEX);
+
+    // Byte 52 is the first zero-padding byte of the y form.
+    proof_blob[52] ^= 0x01;
+    assert!(
+        !check_proof_of_time_n_wesolowski(&d, &x_s, &proof_blob, ITERS, 0),
+        "non-zero y-form padding should fail the canonical round-trip check"
+    );
+}
+
+/// IS_1 and IS_GEN forms use only byte 0; bytes 1–99 are don't-cares and are
+/// silently ignored by the deserializer (early return before canonical check).
+///
+/// In this test vector the pi (witness) form is the identity (IS_1, byte 0 =
+/// 0x04), so any mutation to its trailing bytes still decodes to (a=1, b=1)
+/// and verification passes unchanged.  The same applies to x (IS_GEN, 0x08).
+///
+/// This is the complementary case to test_non_canonical_y_padding_rejected:
+/// the canonical check only fires for ordinary (non-special) forms.
+#[test]
+fn test_is1_isgen_trailing_bytes_ignored() {
+    let d = get_discriminant();
+    let mut x_s = hex_decode(X_S_HEX);       // IS_GEN (0x08): bytes 1-99 ignored
+    let mut proof_blob = hex_decode(PROOF_BLOB_HEX); // pi form is IS_1 (0x04): bytes 101-199 ignored
+
+    x_s[99] ^= 0xff;
+    proof_blob[199] ^= 0xff; // last byte of IS_1 pi form
+    assert!(
+        check_proof_of_time_n_wesolowski(&d, &x_s, &proof_blob, ITERS, 0),
+        "trailing bytes of IS_GEN/IS_1 forms are don't-cares; proof should still verify"
+    );
+}
+
 /// Corrupted proof bytes should fail verification.
 #[test]
 fn test_corrupted_proof_fails() {
