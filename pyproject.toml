@@ -12,3 +12,8 @@ license = { text = "Apache-2.0" }
 [tool.maturin]
 features = ["python"]
 module-name = "chia_vdf_verify"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+]
