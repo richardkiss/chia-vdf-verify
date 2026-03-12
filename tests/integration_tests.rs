@@ -282,6 +282,68 @@ fn test_fast_pow_correctness() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Mainnet test vector: height=309155, cc_ip, 1024-bit discriminant
+//
+// Extracted from block height 309155 (challenge-chain infusion-point proof).
+// This is the exact case found by differential fuzzing where chiavdf's C++
+// BQFC decoder returns True for a mutation that Rust correctly rejects.
+//
+// Root cause: chiavdf ignores the upper bits of the b0 field (byte 99 of the
+// 100-byte y form).  Rust re-serialises the decoded form and checks it matches
+// the input byte-for-byte (canonical round-trip), so any change to b0 is
+// caught — even bits that chiavdf treats as don't-cares.
+// ---------------------------------------------------------------------------
+
+// Big-endian magnitude bytes of the discriminant (negate to get the actual D)
+const D_MAINNET_HEX: &str = "d036828612e0ccf69971b6b14438171cf08074bc5ea450b3d5ae0526be867a8015671af4648aa59d64ec06091036385cd351dc5bdf01c694bb915316b4f2fee9509ff1dbaebf6407994962d77aaedd403d08436096cce62465eddcd652f6970ba48e3759f8d226cac0a2976f24de3da40c744286cec5ad666d62a51ac32ac1a7";
+
+// output = y_form (100 bytes) + pi_witness (100 bytes), witness_type = 0
+const OUTPUT_MAINNET_HEX: &str = "0300d8262c430e78e7c06cf60c9b2049968f604f3b506a85bfe4fff319f8176760e06cab8ab45524458bf558101f9b4ce8c23cc1e053263272b808b76c6f26493a113b62ded5707b28d9eedc0503ac2efcd32be670726725be0fa7ea01f0ef3f602502010000c3625953c111ba28de77d3e63846cc1063596d44cc8a2cd57a44a60c96b072ba8254485ece15a98b52bdd1907d1359e33929861be12346815a38e083872e5b03c75e2a4d48fdc787f44244f78769c44d186e8446daa45f22e4997f1ded3b96030703";
+
+const ITERS_MAINNET: u64 = 64670218;
+
+fn get_mainnet_discriminant() -> Integer {
+    let d_bytes = hex_decode(D_MAINNET_HEX);
+    -from_bytes_be(&d_bytes)
+}
+
+/// Valid mainnet proof verifies correctly.
+#[test]
+fn test_mainnet_height_309155_valid() {
+    let d = get_mainnet_discriminant();
+    let x_s = hex_decode(X_S_HEX); // IS_GEN input (0x08 + zeros)
+    let output = hex_decode(OUTPUT_MAINNET_HEX);
+
+    assert!(
+        check_proof_of_time_n_wesolowski(&d, &x_s, &output, ITERS_MAINNET, 0),
+        "mainnet height=309155 cc_ip proof should verify"
+    );
+}
+
+/// Flipping bits 2+ of the b0 field (y-form byte 99) is rejected by the
+/// canonical round-trip check.
+///
+/// chiavdf 1.1.14 returns True for this mutation — it ignores the upper bits
+/// of b0 when reconstructing b, so it recovers the same (a, b) regardless.
+/// This test pins the Rust behaviour: we always reject non-canonical b0 values.
+#[test]
+fn test_mainnet_b0_upper_bits_rejected() {
+    let d = get_mainnet_discriminant();
+    let x_s = hex_decode(X_S_HEX);
+    let output = hex_decode(OUTPUT_MAINNET_HEX);
+
+    // byte 99 = b0 field of y form (g_size=0, 1024-bit disc).
+    // Original b0 = 0x01; XOR 0x04 flips bit 2 — upper bits only.
+    let mut bad = output.clone();
+    bad[99] ^= 0x04;
+
+    assert!(
+        !check_proof_of_time_n_wesolowski(&d, &x_s, &bad, ITERS_MAINNET, 0),
+        "b0 upper-bit mutation must fail the canonical round-trip check"
+    );
+}
+
 // Second test vector: seed = "chia-vdf-rust", iters = 200
 const ITERS2: u64 = 200;
 const D_BYTES2_HEX: &str = "c3ef34d02017540ef26d88057bbfc778da12ed572b99f8707834ed344577c210b1f9287f54a536913177bf5880a4a51b6bfa42445f3fbcd082b695e38c2066d7";
