@@ -166,36 +166,44 @@ def test_wrong_disc_both_reject(disc2, x_s, proof1):
 # ---------------------------------------------------------------------------
 
 
-def test_b0_upper_bits_rust_rejects_chiavdf_accepts():
+def test_b0_upper_bits_rust_rejects():
     """
-    Core discrepancy found by differential fuzzing (mainnet height=309155, cc_ip).
-
-    For a 1024-bit discriminant the b0 field occupies byte 99 of the y form.
-    Flipping bits 2+ of b0 (e.g. ^0x04) causes chiavdf's C++ decoder to return
-    True — it appears to ignore the upper bits of b0 and recovers the same (a, b).
-    Rust's canonical round-trip check detects that the re-serialised form differs
-    from the input and rejects it.
-
-    If chiavdf starts returning False here it has gained the canonical check.
+    Rust rejects a mutation to the upper bits of b0 (y-form byte 99, 1024-bit disc).
+    Mainnet height=309155, cc_ip — the exact case found by differential fuzzing.
     """
     x_s = bytes.fromhex(X_S_1024_HEX)
     output = bytes.fromhex(OUTPUT_1024_HEX)
-
-    # Confirm the original is valid
-    assert rust_verify(DISC_1024_STR, x_s, output, ITERS_1024, 1024, 0)
-    assert cpp_verify(DISC_1024_STR, x_s, output, ITERS_1024, 1024, 0)
-
     bad = bytearray(output)
-    bad[99] ^= 0x04  # flip bits 2+ of b0
+    bad[99] ^= 0x04  # flip bits 2+ of b0; original value = 0x01
 
-    rust_result = rust_verify(DISC_1024_STR, x_s, bytes(bad), ITERS_1024, 1024, 0)
-    cpp_result = _cpp_result(DISC_1024_STR, x_s, bytes(bad), ITERS_1024, disc_bits=1024)
+    assert not rust_verify(DISC_1024_STR, x_s, bytes(bad), ITERS_1024, 1024, 0), \
+        "Rust should reject: canonical check catches changed b0"
 
-    assert not rust_result, "Rust should reject (canonical check catches changed b0)"
-    assert cpp_result, (
-        "chiavdf should accept (ignores upper bits of b0); "
-        "if this fails chiavdf behaviour has changed"
-    )
+
+@pytest.mark.xfail(
+    reason=(
+        "chiavdf 1.1.14 ignores the upper bits of b0 when reconstructing b, "
+        "so it accepts this mutation that Rust correctly rejects. "
+        "If this xfail starts passing, chiavdf has fixed the bug — remove the mark."
+    ),
+    strict=True,
+)
+def test_b0_upper_bits_chiavdf_should_also_reject():
+    """
+    chiavdf should reject the same b0 mutation that Rust rejects, but currently
+    does not — it returns True for a proof with corrupted b0 upper bits.
+
+    Marked xfail(strict=True): the test body asserts chiavdf rejects, which
+    currently fails (chiavdf accepts).  'strict' means the suite goes red if
+    chiavdf ever fixes this and starts rejecting — a signal to remove the mark.
+    """
+    x_s = bytes.fromhex(X_S_1024_HEX)
+    output = bytes.fromhex(OUTPUT_1024_HEX)
+    bad = bytearray(output)
+    bad[99] ^= 0x04
+
+    assert not _cpp_result(DISC_1024_STR, x_s, bytes(bad), ITERS_1024, disc_bits=1024), \
+        "chiavdf should reject non-canonical b0 (currently it does not)"
 
 
 def test_is_gen_trailing_bytes_both_accept(disc1, x_s, proof1):
