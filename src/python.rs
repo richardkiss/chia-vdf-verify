@@ -1,14 +1,31 @@
 use pyo3::prelude::*;
 
+use crate::integer::from_signed_bytes_be;
+use crate::verifier::check_proof_of_time_n_wesolowski;
+
 /// Create a discriminant from a seed and bit length.
 /// Returns a hex string representation of the (negative) discriminant,
 /// matching the chiavdf format: e.g. "-3abc...".
 /// Callers convert via: int(result, 16)
 #[pyfunction]
-fn create_discriminant(seed: &[u8], length: usize) -> String {
-    let d = crate::discriminant::create_discriminant(seed, length);
-    // d is negative; format magnitude as hex with leading '-'
-    format!("-{:x}", d.magnitude())
+fn create_discriminant(py: Python<'_>, seed: &[u8], length: usize) -> String {
+    let seed = seed.to_vec();
+    py.allow_threads(move || {
+        let d = crate::discriminant::create_discriminant(&seed, length);
+        format!("{:x}", d)
+    })
+}
+
+/// Create a discriminant from a seed and bit length, returning bytes.
+/// Format: [sign_byte][magnitude_be...]. Use with verify_n_wesolowski_bytes
+/// to avoid repeated decimal string parse overhead.
+#[pyfunction]
+fn create_discriminant_bytes(py: Python<'_>, seed: &[u8], length: usize) -> Vec<u8> {
+    let seed = seed.to_vec();
+    py.allow_threads(move || {
+        let d = crate::discriminant::create_discriminant(&seed, length);
+        crate::integer::to_signed_bytes_be(&d)
+    })
 }
 
 /// Verify a VDF N-Wesolowski proof.
@@ -22,6 +39,7 @@ fn create_discriminant(seed: &[u8], length: usize) -> String {
 ///   witness_type         - proof depth (0, 1, 2, …)
 #[pyfunction]
 fn verify_n_wesolowski(
+    py: Python<'_>,
     disc: &str,
     input_el: &[u8],
     output: &[u8],
@@ -29,22 +47,58 @@ fn verify_n_wesolowski(
     _discriminant_size: usize,
     witness_type: u64,
 ) -> bool {
-    let d: num_bigint::BigInt = match disc.parse() {
+    let d = match disc.parse::<malachite_nz::integer::Integer>() {
         Ok(v) => v,
         Err(_) => return false,
     };
-    crate::verifier::check_proof_of_time_n_wesolowski(
-        &d,
-        input_el,
-        output,
-        number_of_iterations,
-        witness_type,
-    )
+    let input_el = input_el.to_vec();
+    let output = output.to_vec();
+    py.allow_threads(move || {
+        check_proof_of_time_n_wesolowski(
+            &d,
+            &input_el,
+            &output,
+            number_of_iterations,
+            witness_type,
+        )
+    })
+}
+
+/// Verify a VDF N-Wesolowski proof using discriminant bytes.
+/// Avoids the decimal string parse overhead of verify_n_wesolowski.
+/// disc_bytes: output of create_discriminant_bytes (format: [sign_byte][magnitude_be...])
+#[pyfunction]
+fn verify_n_wesolowski_bytes(
+    py: Python<'_>,
+    disc_bytes: &[u8],
+    input_el: &[u8],
+    output: &[u8],
+    number_of_iterations: u64,
+    _discriminant_size: usize,
+    witness_type: u64,
+) -> bool {
+    let d = match from_signed_bytes_be(disc_bytes) {
+        Some(v) => v,
+        None => return false,
+    };
+    let input_el = input_el.to_vec();
+    let output = output.to_vec();
+    py.allow_threads(move || {
+        check_proof_of_time_n_wesolowski(
+            &d,
+            &input_el,
+            &output,
+            number_of_iterations,
+            witness_type,
+        )
+    })
 }
 
 #[pymodule]
 fn chia_vdf_verify(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(create_discriminant, m)?)?;
+    m.add_function(wrap_pyfunction!(create_discriminant_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(verify_n_wesolowski, m)?)?;
+    m.add_function(wrap_pyfunction!(verify_n_wesolowski_bytes, m)?)?;
     Ok(())
 }

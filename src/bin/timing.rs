@@ -1,4 +1,3 @@
-use num_traits::Signed;
 use std::time::Instant;
 
 fn time_fn<F: Fn()>(name: &str, n: u32, f: F) {
@@ -20,8 +19,7 @@ fn time_fn<F: Fn()>(name: &str, n: u32, f: F) {
 
 fn main() {
     use chia_vdf_verify::*;
-    use num_bigint::BigInt;
-    use num_traits::Zero;
+    use malachite_nz::integer::Integer;
 
     fn hex_decode(s: &str) -> Vec<u8> {
         (0..s.len())
@@ -89,10 +87,11 @@ fn main() {
         std::hint::black_box(f);
     });
 
+    let d_abs = Integer::from(d.unsigned_abs_ref().clone());
     time_fn("xgcd_partial (512-bit r2, 264-bit r1)", 20000, || {
-        let mut co2 = BigInt::zero();
-        let mut co1 = BigInt::zero();
-        let mut r2 = d.abs();
+        let mut co2 = Integer::from(0i32);
+        let mut co1 = Integer::from(0i32);
+        let mut r2 = d_abs.clone();
         let mut r1 = b.clone();
         xgcd_partial::xgcd_partial(&mut co2, &mut co1, &mut r2, &mut r1, &l);
         std::hint::black_box((co2, co1));
@@ -106,42 +105,26 @@ fn main() {
         std::hint::black_box(primetest::hash_prime(b"timing_seed_12345", 264, &[263]));
     });
 
-    time_fn("BigInt mul (512x512 -> 1024)", 500000, || {
+    time_fn("Integer mul (512x512 -> 1024)", 500000, || {
         let r = &d * &d;
         std::hint::black_box(r);
     });
 
-    time_fn("extended_gcd num_integer (512-bit)", 50000, || {
-        use num_integer::Integer;
-        use num_traits::Signed;
-        let r = d.abs().extended_gcd(&b);
+    let half_d = &d >> 1u64;
+    let half_d_abs = Integer::from(half_d.unsigned_abs_ref().clone());
+
+    time_fn("fast_extended_gcd malachite (512-bit)", 50000, || {
+        let r = chia_vdf_verify::integer::fast_extended_gcd(&d_abs, &b);
         std::hint::black_box(r);
     });
 
-    time_fn("fast_extended_gcd Lehmer (512-bit)", 50000, || {
-        use num_traits::Signed;
-        let r = chia_vdf_verify::integer::fast_extended_gcd(&d.abs(), &b);
+    time_fn("fast_extended_gcd malachite (256-bit)", 50000, || {
+        let r = chia_vdf_verify::integer::fast_extended_gcd(&half_d_abs, &b);
         std::hint::black_box(r);
     });
 
-    // Also test on 256-bit inputs (typical form coefficients)
-    let half_d = &d >> 1usize;
-    time_fn("extended_gcd num_integer (256-bit)", 50000, || {
-        use num_integer::Integer;
-        use num_traits::Signed;
-        let r = half_d.abs().extended_gcd(&b);
-        std::hint::black_box(r);
-    });
-
-    time_fn("fast_extended_gcd Lehmer (256-bit)", 50000, || {
-        use num_traits::Signed;
-        let r = chia_vdf_verify::integer::fast_extended_gcd(&half_d.abs(), &b);
-        std::hint::black_box(r);
-    });
-
-    time_fn("fast_gcd_coeff_b (256-bit)", 50000, || {
-        use num_traits::Signed;
-        let r = chia_vdf_verify::integer::fast_gcd_coeff_b(&half_d.abs(), &b);
+    time_fn("fast_gcd_coeff_b malachite (256-bit)", 50000, || {
+        let r = chia_vdf_verify::integer::fast_gcd_coeff_b(&half_d_abs, &b);
         std::hint::black_box(r);
     });
 }

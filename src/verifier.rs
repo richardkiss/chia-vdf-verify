@@ -7,7 +7,7 @@ use crate::form::Form;
 use crate::nucomp::nucomp;
 use crate::proof_common::{deserialize_form, fast_pow, fast_pow_form_nucomp, get_b, B_BYTES};
 use crate::reducer::reduce;
-use num_bigint::BigInt;
+use malachite_nz::integer::Integer;
 
 /// Verify a single Wesolowski segment.
 ///
@@ -16,10 +16,10 @@ use num_bigint::BigInt;
 ///
 /// Returns Ok(y_computed) on success, Err on failure.
 pub fn verify_weso_segment(
-    d: &BigInt,
+    d: &Integer,
     x: &Form,
     proof: &Form,
-    b: &BigInt,
+    b: &Integer,
     iters: u64,
 ) -> Result<Form, String> {
     let l = Form::compute_l(d);
@@ -37,7 +37,7 @@ pub fn verify_weso_segment(
 /// Verify a Wesolowski proof.
 ///
 /// Checks: proof^B * x^r == y
-pub fn verify_wesolowski_proof(d: &BigInt, x: &Form, y: &Form, proof: &Form, iters: u64) -> bool {
+pub fn verify_wesolowski_proof(d: &Integer, x: &Form, y: &Form, proof: &Form, iters: u64) -> bool {
     let l = Form::compute_l(d);
     let mut x_mut = x.clone();
     let mut y_mut = y.clone();
@@ -59,14 +59,9 @@ pub fn verify_wesolowski_proof(d: &BigInt, x: &Form, y: &Form, proof: &Form, ite
 ///   [y_form (100 bytes)] [proof_form (100 bytes)] [segments from back...]
 /// Each segment: [iters (8 bytes)] [B (33 bytes)] [proof_form (100 bytes)]
 ///
-/// x_s: serialized input form (100 bytes)
-/// proof_blob: the proof bytes
-/// iterations: total iterations
-/// depth: number of recursive segments
-///
 /// Returns true if proof is valid.
 pub fn check_proof_of_time_n_wesolowski(
-    d: &BigInt,
+    d: &Integer,
     x_s: &[u8],
     proof_blob: &[u8],
     iterations: u64,
@@ -112,7 +107,6 @@ pub fn check_proof_of_time_n_wesolowski(
             Err(_) => return false,
         };
 
-        // Verify that B matches
         let mut x_clone = x.clone();
         let mut out_y_clone = out_y.clone();
         let computed_b = get_b(d, &mut x_clone, &mut out_y_clone);
@@ -128,7 +122,6 @@ pub fn check_proof_of_time_n_wesolowski(
         remaining_iters -= segment_iters;
     }
 
-    // Final verification
     let y = match deserialize_form(d, &proof_blob[..form_size]) {
         Ok(f) => f,
         Err(_) => return false,
@@ -148,18 +141,12 @@ mod tests {
 
     #[test]
     fn test_verify_basic_structure() {
-        // Just verify the basic structure works without a real proof
         let seed = b"test";
         let d = create_discriminant(seed, 512);
         let x = Form::identity(&d);
 
-        // An obviously wrong proof (identity form raised to any power = identity)
-        // identity^B * identity^r = identity
-        // So if y = identity, it should be valid!
         let iters = 100u64;
         let result = verify_wesolowski_proof(&d, &x, &x, &x, iters);
-        // This won't be valid without a real proof, but it should not panic
-        // The result could be true (if identity is a fixed point) or false
         let _ = result;
     }
 }

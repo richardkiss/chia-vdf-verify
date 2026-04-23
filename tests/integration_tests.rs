@@ -1,7 +1,7 @@
 use chia_vdf_verify::bqfc::BQFC_FORM_SIZE;
 use chia_vdf_verify::discriminant::create_discriminant;
 use chia_vdf_verify::form::Form;
-use chia_vdf_verify::integer::{from_bytes_be, num_bits};
+use chia_vdf_verify::integer::{fdiv_r, from_bytes_be, num_bits};
 use chia_vdf_verify::nucomp::{nucomp, nudupl};
 use chia_vdf_verify::primetest::is_prime_bpsw;
 use chia_vdf_verify::proof_common::{
@@ -17,8 +17,8 @@ use chia_vdf_verify::reducer::reduce;
 ///   iters = 100
 ///   y = x^(2^100) with discriminant D
 use chia_vdf_verify::verifier::check_proof_of_time_n_wesolowski;
-use num_bigint::BigInt;
-use num_traits::{Signed, Zero};
+use malachite_base::num::basic::traits::{One, Zero};
+use malachite_nz::integer::Integer;
 
 fn hex_decode(s: &str) -> Vec<u8> {
     (0..s.len())
@@ -35,7 +35,7 @@ const D_BYTES_HEX: &str = "d0cb181074454b32a0e0fc5e65a1d7625ea43756eaa8de13a9c75
 const X_S_HEX: &str = "08000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
 const PROOF_BLOB_HEX: &str = "020020417eb39c4e14954a817af644fc13d086c26dddab8afea12415b5e685f7883f5740ba01cb75220081c8aba7854cbd52010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
 
-fn get_discriminant() -> BigInt {
+fn get_discriminant() -> Integer {
     let d_bytes = hex_decode(D_BYTES_HEX);
     -from_bytes_be(&d_bytes)
 }
@@ -71,11 +71,10 @@ fn test_discriminant_matches_testvector() {
 fn test_discriminant_properties() {
     let seed = b"test_seed_chia";
     let d = create_discriminant(seed, 512);
-    assert!(d.is_negative(), "D must be negative");
+    assert!(d < 0i32, "D must be negative");
 
-    use num_integer::Integer;
-    let r = d.mod_floor(&BigInt::from(8));
-    assert_eq!(r, BigInt::from(1), "D must be ≡ 1 (mod 8)");
+    let r = fdiv_r(&d, &Integer::from(8i32));
+    assert_eq!(r, Integer::from(1i32), "D must be ≡ 1 (mod 8)");
 
     assert_eq!(num_bits(&d), 512, "D must have exactly 512 bits");
 
@@ -89,8 +88,8 @@ fn test_deserialize_generator_form() {
     let d = get_discriminant();
     let x_s = hex_decode(X_S_HEX);
     let x = deserialize_form(&d, &x_s).expect("failed to deserialize x");
-    assert_eq!(x.a, BigInt::from(2u32), "generator form: a should be 2");
-    assert_eq!(x.b, BigInt::from(1u32), "generator form: b should be 1");
+    assert_eq!(x.a, 2i32, "generator form: a should be 2");
+    assert_eq!(x.b, 1i32, "generator form: b should be 1");
 }
 
 /// Verify y can be deserialized and has correct discriminant.
@@ -100,8 +99,7 @@ fn test_deserialize_y_form() {
     let proof_blob = hex_decode(PROOF_BLOB_HEX);
     let y = deserialize_form(&d, &proof_blob[..BQFC_FORM_SIZE]).expect("failed to deserialize y");
 
-    // Check discriminant: b^2 - 4ac = D
-    let disc = &y.b * &y.b - BigInt::from(4) * &y.a * &y.c;
+    let disc = &y.b * &y.b - Integer::from(4i32) * &y.a * &y.c;
     assert_eq!(disc, d, "y form has wrong discriminant");
     assert!(y.is_reduced(), "y must be reduced");
 }
@@ -115,8 +113,8 @@ fn test_form_exponentiation_preserves_discriminant() {
     let l = Form::compute_l(&d);
 
     for &exp in &[0u64, 1, 2, 10, 50] {
-        let result = fast_pow_form_nucomp(&x, &d, &BigInt::from(exp), &l);
-        let disc = &result.b * &result.b - BigInt::from(4) * &result.a * &result.c;
+        let result = fast_pow_form_nucomp(&x, &d, &Integer::from(exp), &l);
+        let disc = &result.b * &result.b - Integer::from(4i32) * &result.a * &result.c;
         assert_eq!(
             disc, d,
             "discriminant changed after exponentiation by {}",
@@ -138,9 +136,9 @@ fn test_zero_exponentiation_is_identity() {
     let x = deserialize_form(&d, &x_s).unwrap();
     let l = Form::compute_l(&d);
 
-    let result = fast_pow_form_nucomp(&x, &d, &BigInt::zero(), &l);
-    assert_eq!(result.a, BigInt::from(1u32), "x^0 should be identity (a=1)");
-    assert_eq!(result.b, BigInt::from(1u32), "x^0 should be identity (b=1)");
+    let result = fast_pow_form_nucomp(&x, &d, &Integer::ZERO, &l);
+    assert_eq!(result.a, 1i32, "x^0 should be identity (a=1)");
+    assert_eq!(result.b, 1i32, "x^0 should be identity (b=1)");
 }
 
 /// Property: x^1 = x.
@@ -151,7 +149,7 @@ fn test_one_exponentiation_is_self() {
     let x = deserialize_form(&d, &x_s).unwrap();
     let l = Form::compute_l(&d);
 
-    let result = fast_pow_form_nucomp(&x, &d, &BigInt::from(1u32), &l);
+    let result = fast_pow_form_nucomp(&x, &d, &Integer::ONE, &l);
     let mut x_reduced = x.clone();
     reduce(&mut x_reduced);
     assert_eq!(result, x_reduced, "x^1 should equal x");
@@ -169,7 +167,7 @@ fn test_nudupl_discriminant() {
     for _ in 0..10 {
         f = nudupl(&f, &d, &l);
         reduce(&mut f);
-        let disc = &f.b * &f.b - BigInt::from(4) * &f.a * &f.c;
+        let disc = &f.b * &f.b - Integer::from(4i32) * &f.a * &f.c;
         assert_eq!(disc, d, "nudupl changed discriminant");
     }
 }
@@ -202,7 +200,6 @@ fn test_reduction_idempotent() {
     let proof_blob = hex_decode(PROOF_BLOB_HEX);
     let y = deserialize_form(&d, &proof_blob[..BQFC_FORM_SIZE]).unwrap();
 
-    // y is already reduced (from deserialize)
     let mut y2 = y.clone();
     reduce(&mut y2);
     assert_eq!(
@@ -217,14 +214,12 @@ fn test_bqfc_roundtrip_special_forms() {
     let d = get_discriminant();
     let d_bits = num_bits(&d);
 
-    // Identity
     let mut identity = Form::identity(&d);
     let bytes = serialize_form(&mut identity, d_bits);
     let f2 = deserialize_form(&d, &bytes).unwrap();
     assert_eq!(identity.a, f2.a);
     assert_eq!(identity.b, f2.b);
 
-    // Generator
     let mut gen = Form::generator(&d);
     let bytes = serialize_form(&mut gen, d_bits);
     let f2 = deserialize_form(&d, &bytes).unwrap();
@@ -280,10 +275,9 @@ fn test_fast_pow_correctness() {
     let b = get_b(&d, &mut x, &mut y);
 
     let r = fast_pow(ITERS, &b);
-    // r = 2^100 mod B
     assert!(r < b, "r must be < B");
     assert!(
-        !r.is_zero() || ITERS == 0,
+        r != Integer::ZERO || ITERS == 0,
         "r should not be 0 for typical cases"
     );
 }
@@ -300,7 +294,7 @@ fn test_verify_real_proof_second_vector() {
         let d_bytes = hex_decode(D_BYTES2_HEX);
         -from_bytes_be(&d_bytes)
     };
-    let x_s = hex_decode(X_S_HEX); // same x (generator form)
+    let x_s = hex_decode(X_S_HEX);
     let proof_blob = hex_decode(PROOF_BLOB2_HEX);
 
     let result = check_proof_of_time_n_wesolowski(&d, &x_s, &proof_blob, ITERS2, 0);
@@ -325,11 +319,9 @@ fn test_wrong_blob_size_fails() {
     let x_s = hex_decode(X_S_HEX);
     let proof_blob = hex_decode(PROOF_BLOB_HEX);
 
-    // Truncate
     let result = check_proof_of_time_n_wesolowski(&d, &x_s, &proof_blob[..100], ITERS, 0);
     assert!(!result, "truncated blob should fail");
 
-    // Extend with garbage
     let mut bad_blob = proof_blob.clone();
     bad_blob.push(0);
     let result = check_proof_of_time_n_wesolowski(&d, &x_s, &bad_blob, ITERS, 0);
@@ -343,7 +335,6 @@ fn test_corrupted_y_fails() {
     let x_s = hex_decode(X_S_HEX);
     let mut proof_blob = hex_decode(PROOF_BLOB_HEX);
 
-    // Corrupt a byte in y
     proof_blob[5] ^= 0x01;
     let result = check_proof_of_time_n_wesolowski(&d, &x_s, &proof_blob, ITERS, 0);
     assert!(!result, "corrupted y should fail verification");
@@ -356,9 +347,6 @@ fn test_corrupted_proof_fails() {
     let x_s = hex_decode(X_S_HEX);
     let mut proof_blob = hex_decode(PROOF_BLOB_HEX);
 
-    // The proof for this test vector serializes to the identity form (first byte 0x04).
-    // Corrupt byte 0 of the proof to turn it into a non-identity form flag.
-    // 0x04 = IS_1, change to 0x00 (normal form with all-zero fields = invalid form).
     proof_blob[BQFC_FORM_SIZE] = 0x00;
     let result = check_proof_of_time_n_wesolowski(&d, &x_s, &proof_blob, ITERS, 0);
     assert!(!result, "corrupted proof should fail verification");

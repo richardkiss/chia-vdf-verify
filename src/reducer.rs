@@ -5,9 +5,8 @@
 
 use crate::form::Form;
 use crate::integer::get_si_2exp;
-use num_bigint::BigInt;
-use num_integer::Integer;
-use num_traits::Signed;
+use malachite_base::num::arithmetic::traits::{AddMulAssign, CeilingDivMod, NegAssign};
+use malachite_nz::integer::Integer;
 
 const THRESH: i64 = 1i64 << 31;
 const EXP_THRESH: i64 = 31;
@@ -23,7 +22,6 @@ pub fn reduce(f: &mut Form) {
         let min_exp = *[a_exp, b_exp, c_exp].iter().min().unwrap();
 
         if max_exp - min_exp > EXP_THRESH {
-            // Fall back to simple step
             reducer_simple(f);
             continue;
         }
@@ -38,11 +36,27 @@ pub fn reduce(f: &mut Form) {
 
         let (u, v, w, x) = calc_uvwx(a, b, c);
 
-        // Apply the (u,v,w,x) matrix to (a, b, c)
-        let new_a = f.a.clone() * (u * u) + f.b.clone() * (u * w) + f.c.clone() * (w * w);
-        let new_b =
-            f.a.clone() * (2 * u * v) + f.b.clone() * (u * x + v * w) + f.c.clone() * (2 * w * x);
-        let new_c = f.a.clone() * (v * v) + f.b.clone() * (v * x) + f.c.clone() * (x * x);
+        let uu = Integer::from(u * u);
+        let uw = Integer::from(u * w);
+        let ww = Integer::from(w * w);
+        let uv2 = Integer::from(2 * u * v);
+        let ux_vw = Integer::from(u * x + v * w);
+        let wx2 = Integer::from(2 * w * x);
+        let vv = Integer::from(v * v);
+        let vx = Integer::from(v * x);
+        let xx = Integer::from(x * x);
+
+        let mut new_a = &f.a * &uu;
+        new_a.add_mul_assign(&f.b, &uw);
+        new_a.add_mul_assign(&f.c, &ww);
+
+        let mut new_b = &f.a * &uv2;
+        new_b.add_mul_assign(&f.b, &ux_vw);
+        new_b.add_mul_assign(&f.c, &wx2);
+
+        let mut new_c = &f.a * &vv;
+        new_c.add_mul_assign(&f.b, &vx);
+        new_c.add_mul_assign(&f.c, &xx);
 
         f.a = new_a;
         f.b = new_b;
@@ -52,53 +66,23 @@ pub fn reduce(f: &mut Form) {
 
 /// Simple reducer step (used when exponent spread is large).
 fn reducer_simple(f: &mut Form) {
-    // s = floor((b + c) / (2c))  — this is the `mpz_mdiv` step
-    // mdiv is "round away from zero", equivalent to "ceil(b/c)" when b/c could be negative
-    // The C code: s = (c + b)/(2c) using mpz_mdiv which is ceiling division
-    // Actually: mpz_mdiv(r, b, c) = ceiling(b/c)
-    // Then: s = (r + 1) / 2
     let r = ceildiv(&f.b, &f.c);
-    let r_plus1 = r + BigInt::from(1u32);
-    let s = r_plus1 >> 1usize;
+    let s = (r + Integer::from(1i32)) >> 1u64;
 
     let cs = &f.c * &s;
-    let cs2 = &cs << 1usize;
-
-    // m = cs - b
     let m = &cs - &f.b;
+    let new_b = (&cs << 1u64) - &f.b;
 
-    // new_b = -b + 2cs = 2cs - b
-    let new_b = &cs2 - &f.b;
-
-    // new_c = old_a
-    let old_a = f.a.clone();
-
-    // new_a = old_c
-    f.a = f.c.clone();
-
-    // new_c = old_a + cs^2 - bs = old_a + s*m
-    f.c = old_a + &s * &m;
+    std::mem::swap(&mut f.a, &mut f.c);
+    f.c.add_mul_assign(&s, &m);
     f.b = new_b;
 }
 
 /// Ceiling division: ceil(a/b).
-fn ceildiv(a: &BigInt, b: &BigInt) -> BigInt {
-    // ceil(a/b) = floor((a + b - 1) / b) for b > 0
-    // But GMP's mpz_mdiv is "magnitude division", i.e., it rounds toward zero for the quotient
-    // magnitude and then adjusts sign.
-    // Actually from the C code context: mpz_mdiv(ctx.r, ctx.b, ctx.c) where c > 0 during
-    // reduction (c is always positive). For c > 0:
-    // mdiv(a, b) = ceil(a / b) when a/b >= 0, = floor(a/b) when a/b < 0
-    // Which is actually the same as truncating division toward zero, then adding 1 if remainder > 0.
-    // Let's use: mdiv = sign(a/b) * ceil(|a/b|) = truncating div with round-up magnitude.
-    // For GMP mpz_mdiv: quotient * divisor >= dividend (rounds towards 0 or away from 0?).
-    // Looking at GMP docs: mpz_mdiv truncates toward zero (same as cdiv_q for positive divisor).
-    // For b > 0: cdiv_q rounds toward +inf.
-    // Let's use: (a + b - 1) / b for a >= 0, and a / b (truncating) for a < 0 with b > 0.
-    if b.is_positive() {
-        a.div_ceil(b)
+fn ceildiv(a: &Integer, b: &Integer) -> Integer {
+    if *b > 0i32 {
+        a.ceiling_div_mod(b).0
     } else {
-        // This shouldn't happen in normal reduction (c is always positive)
         a / b
     }
 }
@@ -106,23 +90,20 @@ fn ceildiv(a: &BigInt, b: &BigInt) -> BigInt {
 /// Check if the form is reduced and normalize if needed.
 /// Returns true if already reduced (but may have swapped a/c or negated b).
 fn is_reduced(f: &mut Form) -> bool {
-    use num_traits::Signed;
-    let _abs_b = f.b.abs();
+    let abs_a = f.a.unsigned_abs_ref();
+    let abs_b = f.b.unsigned_abs_ref();
+    let abs_c = f.c.unsigned_abs_ref();
 
-    let a_cmpabs_b = f.a.magnitude().cmp(f.b.magnitude());
-    let c_cmpabs_b = f.c.magnitude().cmp(f.b.magnitude());
-
-    if a_cmpabs_b == std::cmp::Ordering::Less || c_cmpabs_b == std::cmp::Ordering::Less {
+    if abs_a < abs_b || abs_c < abs_b {
         return false;
     }
 
-    // a >= |b| and c >= |b|, so it might be reduced
-    let a_cmp_c = f.a.cmp(&f.c);
+    let a_cmp_c = abs_a.cmp(abs_c);
     if a_cmp_c == std::cmp::Ordering::Greater {
         std::mem::swap(&mut f.a, &mut f.c);
-        f.b = -f.b.clone();
-    } else if a_cmp_c == std::cmp::Ordering::Equal && f.b.is_negative() {
-        f.b = -f.b.clone();
+        f.b.neg_assign();
+    } else if a_cmp_c == std::cmp::Ordering::Equal && f.b < 0i32 {
+        f.b.neg_assign();
     }
     true
 }
@@ -186,19 +167,20 @@ fn calc_uvwx(mut a: i64, mut b: i64, mut c: i64) -> (i64, i64, i64, i64) {
 mod tests {
     use super::*;
     use crate::form::Form;
-    use num_bigint::BigInt;
 
-    fn disc_check(f: &Form, d: &BigInt) -> bool {
-        let disc = &f.b * &f.b - BigInt::from(4) * &f.a * &f.c;
+    fn disc_check(f: &Form, d: &Integer) -> bool {
+        let disc = &f.b * &f.b - Integer::from(4i32) * &f.a * &f.c;
         &disc == d
     }
 
     #[test]
     fn test_reduce_preserves_discriminant() {
-        // D = -47
-        let d = BigInt::from(-47i64);
-        // Form (3, 1, 4) with discriminant 1 - 48 = -47
-        let mut f = Form::new(BigInt::from(3), BigInt::from(1), BigInt::from(4));
+        let d = Integer::from(-47i64);
+        let mut f = Form::new(
+            Integer::from(3i32),
+            Integer::from(1i32),
+            Integer::from(4i32),
+        );
         assert!(disc_check(&f, &d));
         reduce(&mut f);
         assert!(disc_check(&f, &d), "discriminant changed after reduction");
@@ -213,13 +195,12 @@ mod tests {
 
     #[test]
     fn test_reduce_idempotent() {
-        let d = BigInt::from(-47i64);
-        let f = Form::new(BigInt::from(5), BigInt::from(3), BigInt::from(3));
-        let _disc = &f.b * &f.b - BigInt::from(4) * &f.a * &f.c;
-        // 9 - 60 = -51, not -47. Let's use a form that's actually valid
-        // Form (5, 1, c) where c = (1+47)/20 = 48/20 is not integer...
-        // Use (2, 1, 6): disc = 1 - 48 = -47
-        let mut f = Form::new(BigInt::from(2), BigInt::from(1), BigInt::from(6));
+        let d = Integer::from(-47i64);
+        let mut f = Form::new(
+            Integer::from(2i32),
+            Integer::from(1i32),
+            Integer::from(6i32),
+        );
         assert!(disc_check(&f, &d));
         reduce(&mut f);
         let f2 = f.clone();

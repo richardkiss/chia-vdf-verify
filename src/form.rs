@@ -3,76 +3,74 @@
 
 use crate::integer::{divexact, num_bits};
 use crate::reducer::reduce;
-use num_bigint::BigInt;
-use num_traits::{One, Zero};
+use malachite_base::num::basic::traits::One;
+use malachite_nz::integer::Integer;
 
 /// A binary quadratic form with coefficients (a, b, c) and discriminant D.
 #[derive(Clone, Debug)]
 pub struct Form {
-    pub a: BigInt,
-    pub b: BigInt,
-    pub c: BigInt,
+    pub a: Integer,
+    pub b: Integer,
+    pub c: Integer,
 }
 
 impl Form {
-    pub fn new(a: BigInt, b: BigInt, c: BigInt) -> Self {
+    pub fn new(a: Integer, b: Integer, c: Integer) -> Self {
         Form { a, b, c }
     }
 
     /// Construct form from (a, b) and discriminant D, computing c = (b^2 - D) / (4a).
-    pub fn from_abd(a: BigInt, b: BigInt, d: &BigInt) -> Self {
-        // c = (b^2 - D) / (4a)
+    pub fn from_abd(a: Integer, b: Integer, d: &Integer) -> Self {
         let b2 = &b * &b;
         let num = b2 - d;
-        let denom = BigInt::from(4) * &a;
+        let denom = &a << 2u64;
         let c = divexact(&num, &denom);
         Form { a, b, c }
     }
 
     /// Identity form: (1, 1, (1-D)/4).
-    /// The C code uses a=1, b=1 as the identity.
-    pub fn identity(d: &BigInt) -> Self {
-        let a = BigInt::one();
-        let b = BigInt::one();
-        // c = (b^2 - D) / (4a) = (1 - D) / 4
-        let num = BigInt::one() - d;
-        let c = divexact(&num, &BigInt::from(4));
+    pub fn identity(d: &Integer) -> Self {
+        let a = Integer::ONE;
+        let b = Integer::ONE;
+        let num = Integer::ONE - d;
+        let c = num >> 2u64;
         Form { a, b, c }
     }
 
     /// Generator form: (2, 1, (1-D)/8) — only valid when D ≡ 1 mod 8.
-    pub fn generator(d: &BigInt) -> Self {
-        let a = BigInt::from(2);
-        let b = BigInt::one();
-        let num = BigInt::one() - d;
-        let c = divexact(&num, &BigInt::from(8));
+    pub fn generator(d: &Integer) -> Self {
+        let a = Integer::from(2i32);
+        let b = Integer::ONE;
+        let num = Integer::ONE - d;
+        let c = num >> 3u64;
         Form { a, b, c }
     }
 
     /// Check if this is the identity form (a=1, b=1).
     pub fn is_identity(&self) -> bool {
-        self.a == BigInt::one() && self.b == BigInt::one()
+        self.a == 1i32 && self.b == 1i32
     }
 
     /// Check if this is the generator form (a=2, b=1).
     pub fn is_generator(&self) -> bool {
-        self.a == BigInt::from(2) && self.b == BigInt::one()
+        self.a == 2i32 && self.b == 1i32
     }
 
     /// Check if this form is reduced: |b| <= a <= c, with b >= 0 when a == c or |b| == a.
     pub fn is_reduced(&self) -> bool {
-        use num_traits::Signed;
-        let abs_b = self.b.abs();
-        if abs_b > self.a {
+        let abs_b = self.b.unsigned_abs_ref();
+        let abs_a = self.a.unsigned_abs_ref();
+        let abs_c = self.c.unsigned_abs_ref();
+        if abs_b > abs_a {
             return false;
         }
-        if self.a > self.c {
+        if abs_a > abs_c {
             return false;
         }
-        if self.a == self.c && self.b < BigInt::zero() {
+        if self.a == self.c && self.b < 0i32 {
             return false;
         }
-        if abs_b == self.a && self.b < BigInt::zero() {
+        if abs_b == abs_a && self.b < 0i32 {
             return false;
         }
         true
@@ -85,14 +83,13 @@ impl Form {
 
     /// The half-max size parameter L = floor((-D)^(1/4)).
     /// Used as a threshold in nucomp.
-    pub fn compute_l(d: &BigInt) -> BigInt {
-        use num_traits::Signed;
-        let neg_d = d.abs();
-        crate::integer::nth_root(&neg_d, 4)
+    pub fn compute_l(d: &Integer) -> Integer {
+        let neg_d = d.unsigned_abs_ref().clone();
+        crate::integer::nth_root(&Integer::from(neg_d), 4)
     }
 
     /// Discriminant size in bits.
-    pub fn d_bits(d: &BigInt) -> usize {
+    pub fn d_bits(d: &Integer) -> usize {
         num_bits(d)
     }
 }
@@ -111,11 +108,9 @@ mod tests {
 
     #[test]
     fn test_identity_form() {
-        // Discriminant -47 ≡ 1 mod 8? -47 mod 8 = 1 (since -47 = -6*8 + 1)
-        let d = BigInt::from(-47i64);
+        let d = Integer::from(-47i64);
         let f = Form::identity(&d);
-        // Check discriminant: b^2 - 4ac = D
-        let disc = &f.b * &f.b - BigInt::from(4) * &f.a * &f.c;
+        let disc = &f.b * &f.b - Integer::from(4i32) * &f.a * &f.c;
         assert_eq!(disc, d, "identity form discriminant check");
     }
 }

@@ -10,11 +10,15 @@
 //!   g_size+1 bytes: g
 //!   g_size+1 bytes: b0
 
-use crate::integer::{divexact, fdiv_r, from_bytes_le, isqrt, tdiv_q, to_bytes_le_padded};
+use crate::integer::{
+    divexact, fdiv_r, from_bytes_le, gcd_nonneg, isqrt, num_bits, tdiv_q, to_bytes_le_padded,
+};
 use crate::xgcd_partial::xgcd_partial;
-use num_bigint::BigInt;
-use num_integer::Integer;
-use num_traits::{Signed, Zero};
+use malachite_base::num::arithmetic::traits::{ExtendedGcd, FloorSqrt};
+use malachite_base::num::basic::traits::{One, Zero};
+use malachite_base::num::logic::traits::SignificantBits;
+use malachite_nz::integer::Integer;
+use malachite_nz::natural::Natural;
 
 /// Size of the serialized form (100 bytes for 1024-bit max discriminant).
 pub const BQFC_FORM_SIZE: usize = 1024_usize.div_ceil(32) * 3 + 4;
@@ -27,42 +31,41 @@ const BQFC_IS_GEN: u8 = 1 << 3;
 
 /// Compressed form intermediate representation.
 struct QfbC {
-    a: BigInt,
-    t: BigInt,
-    g: BigInt,
-    b0: BigInt,
+    a: Integer,
+    t: Integer,
+    g: Integer,
+    b0: Integer,
     b_sign: bool,
 }
 
 /// Compress (a, b) to intermediate representation.
-fn bqfc_compr(a: &BigInt, b: &BigInt) -> QfbC {
+fn bqfc_compr(a: &Integer, b: &Integer) -> QfbC {
     if a == b {
         return QfbC {
             a: a.clone(),
-            t: BigInt::zero(),
-            g: BigInt::zero(),
-            b0: BigInt::zero(),
+            t: Integer::ZERO,
+            g: Integer::ZERO,
+            b0: Integer::ZERO,
             b_sign: false,
         };
     }
 
-    let sign = b.is_negative();
+    let sign = *b < 0i32;
     let a_sqrt = isqrt(a);
 
     let mut a_copy = a.clone();
     let mut b_copy = if sign { -b } else { b.clone() };
 
-    let mut dummy = BigInt::zero();
-    let mut t = BigInt::zero();
+    let mut dummy = Integer::ZERO;
+    let mut t = Integer::ZERO;
 
     xgcd_partial(&mut dummy, &mut t, &mut a_copy, &mut b_copy, &a_sqrt);
-    // xgcd_partial sets the opposite sign for t
     t = -t;
 
-    let g = a.gcd(&t);
+    let g = gcd_nonneg(a, &t);
 
-    let (a_out, b0) = if g == BigInt::from(1u32) {
-        (a.clone(), BigInt::zero())
+    let (a_out, b0) = if g == 1i32 {
+        (a.clone(), Integer::ZERO)
     } else {
         let a_new = divexact(a, &g);
         let t_new = divexact(&t, &g);
@@ -82,56 +85,44 @@ fn bqfc_compr(a: &BigInt, b: &BigInt) -> QfbC {
 }
 
 /// Decompress intermediate representation to (a, b) given discriminant D.
-fn bqfc_decompr(d: &BigInt, c: &QfbC) -> Result<(BigInt, BigInt), String> {
-    if c.t.is_zero() {
+fn bqfc_decompr(d: &Integer, c: &QfbC) -> Result<(Integer, Integer), String> {
+    if c.t == 0i32 {
         return Ok((c.a.clone(), c.a.clone()));
     }
 
-    let t = if c.t.is_negative() {
-        &c.t + &c.a
-    } else {
-        c.t.clone()
-    };
+    let t = if c.t < 0i32 { &c.t + &c.a } else { c.t.clone() };
 
-    if c.a.is_zero() {
+    if c.a == 0i32 {
         return Err("bqfc_decompr: a is zero".to_string());
     }
 
-    // t_inv = modular inverse of t mod a
-    let egcd = t.extended_gcd(&c.a);
-    if egcd.gcd != BigInt::from(1u32) {
-        return Err(format!("bqfc_decompr: gcd(t, a) = {} != 1", egcd.gcd));
+    let t_nat = t.unsigned_abs_ref().clone();
+    let a_nat = c.a.unsigned_abs_ref().clone();
+    let (gcd, x, _y) = t_nat.extended_gcd(a_nat);
+    if gcd != Natural::ONE {
+        return Err(format!("bqfc_decompr: gcd(t, a) = {} != 1", gcd));
     }
-    let t_inv = if egcd.x.is_negative() {
-        egcd.x + &c.a
-    } else {
-        egcd.x
-    };
+    let t_inv = if x < Integer::ZERO { x + &c.a } else { x };
 
-    // d_mod_a = D mod a
     let d_mod_a = fdiv_r(d, &c.a);
 
-    // tmp = sqrt(t^2 * d_mod_a mod a)
-    let t_sq_mod = c.t.modpow(&BigInt::from(2u32), &c.a);
-    let tmp_prod = &t_sq_mod * &d_mod_a;
-    let tmp_mod = &tmp_prod % &c.a; // tdiv_r
+    let t_sq = &t * &t;
+    let t_sq_mod = Integer::from(t_sq.unsigned_abs_ref() % c.a.unsigned_abs_ref());
 
-    // Check perfect square
-    let tmp_sqrt = isqrt(&tmp_mod);
+    let tmp_prod = &t_sq_mod * &d_mod_a;
+    let tmp_mod = &tmp_prod % &c.a;
+
+    let tmp_mod_nat = tmp_mod.unsigned_abs_ref().clone();
+    let tmp_sqrt = Integer::from((&tmp_mod_nat).floor_sqrt());
     if &tmp_sqrt * &tmp_sqrt != tmp_mod {
         return Err("bqfc_decompr: not a perfect square".to_string());
     }
 
-    // out_b = tmp_sqrt * t_inv mod a
-    let out_b = (&tmp_sqrt * &t_inv) % &c.a; // tdiv_r
+    let out_b = (&tmp_sqrt * &t_inv) % &c.a;
 
-    let out_a = if c.g > BigInt::from(1u32) {
-        &c.a * &c.g
-    } else {
-        c.a.clone()
-    };
+    let out_a = if c.g > 1i32 { &c.a * &c.g } else { c.a.clone() };
 
-    let out_b = if c.b0 > BigInt::zero() {
+    let out_b = if c.b0 > 0i32 {
         out_b + &c.a * &c.b0
     } else {
         out_b
@@ -143,23 +134,17 @@ fn bqfc_decompr(d: &BigInt, c: &QfbC) -> Result<(BigInt, BigInt), String> {
 }
 
 /// Export n as little-endian bytes of exactly `size` bytes.
-fn export_le(out: &mut Vec<u8>, n: &BigInt, size: usize) {
+fn export_le(out: &mut Vec<u8>, n: &Integer, size: usize) {
     let bytes = to_bytes_le_padded(n, size);
     out.extend_from_slice(&bytes);
 }
 
 /// Serialize (a, b) with discriminant bit length d_bits to 100-byte output.
-/// This corresponds to bqfc_serialize.
-pub fn serialize(a: &BigInt, b: &BigInt, d_bits: usize) -> Vec<u8> {
+pub fn serialize(a: &Integer, b: &Integer, d_bits: usize) -> Vec<u8> {
     let mut out = vec![0u8; BQFC_FORM_SIZE];
 
-    // Special cases: identity (1,1) and generator (2,1)
-    if b == &BigInt::from(1u32) && a <= &BigInt::from(2u32) {
-        out[0] = if a == &BigInt::from(2u32) {
-            BQFC_IS_GEN
-        } else {
-            BQFC_IS_1
-        };
+    if *b == 1i32 && *a <= 2i32 {
+        out[0] = if *a == 2i32 { BQFC_IS_GEN } else { BQFC_IS_1 };
         return out;
     }
 
@@ -172,14 +157,14 @@ pub fn serialize(a: &BigInt, b: &BigInt, d_bits: usize) -> Vec<u8> {
     if c.b_sign {
         flags |= BQFC_B_SIGN;
     }
-    if c.t.is_negative() {
+    if c.t < 0i32 {
         flags |= BQFC_T_SIGN;
     }
 
-    let g_size = if c.g.is_zero() {
+    let g_size = if c.g == 0i32 {
         0usize
     } else {
-        let bits = c.g.bits() as usize;
+        let bits = c.g.significant_bits() as usize;
         bits.div_ceil(8)
     };
     let g_size = if g_size == 0 { 0 } else { g_size - 1 };
@@ -188,7 +173,7 @@ pub fn serialize(a: &BigInt, b: &BigInt, d_bits: usize) -> Vec<u8> {
     buf.push(g_size as u8);
 
     export_le(&mut buf, &c.a, d_bits_rounded / 16 - g_size);
-    let t_abs = if c.t.is_negative() {
+    let t_abs = if c.t < 0i32 {
         -c.t.clone()
     } else {
         c.t.clone()
@@ -197,7 +182,6 @@ pub fn serialize(a: &BigInt, b: &BigInt, d_bits: usize) -> Vec<u8> {
     export_le(&mut buf, &c.g, g_size + 1);
     export_le(&mut buf, &c.b0, g_size + 1);
 
-    // Copy into fixed-size output
     let copy_len = buf.len().min(BQFC_FORM_SIZE);
     out[..copy_len].copy_from_slice(&buf[..copy_len]);
     out
@@ -205,7 +189,7 @@ pub fn serialize(a: &BigInt, b: &BigInt, d_bits: usize) -> Vec<u8> {
 
 /// Deserialize a form from 100-byte input with discriminant D.
 /// Returns (a, b) or error string.
-pub fn deserialize(d: &BigInt, data: &[u8]) -> Result<(BigInt, BigInt), String> {
+pub fn deserialize(d: &Integer, data: &[u8]) -> Result<(Integer, Integer), String> {
     if data.len() != BQFC_FORM_SIZE {
         return Err(format!(
             "expected {} bytes, got {}",
@@ -214,17 +198,16 @@ pub fn deserialize(d: &BigInt, data: &[u8]) -> Result<(BigInt, BigInt), String> 
         ));
     }
 
-    // Check special forms
     if data[0] & (BQFC_IS_1 | BQFC_IS_GEN) != 0 {
         let a = if data[0] & BQFC_IS_GEN != 0 {
-            BigInt::from(2u32)
+            Integer::from(2u32)
         } else {
-            BigInt::from(1u32)
+            Integer::ONE
         };
-        return Ok((a, BigInt::from(1u32)));
+        return Ok((a, Integer::ONE));
     }
 
-    let d_bits = crate::integer::num_bits(d);
+    let d_bits = num_bits(d);
     let d_bits_rounded = (d_bits + 31) & !31usize;
 
     let g_size = data[1] as usize;
@@ -261,7 +244,6 @@ pub fn deserialize(d: &BigInt, data: &[u8]) -> Result<(BigInt, BigInt), String> 
 
     let (out_a, out_b) = bqfc_decompr(d, &c)?;
 
-    // Verify canonical serialization
     let canon = serialize(&out_a, &out_b, d_bits);
     if canon != data {
         return Err("non-canonical serialization".to_string());
@@ -282,35 +264,34 @@ mod tests {
 
     #[test]
     fn test_bqfc_form_size() {
-        // For 1024-bit discriminant: (1024+31)/32 = 32, *3 + 4 = 100
         assert_eq!(bqfc_get_compr_size(1024), 100);
         assert_eq!(BQFC_FORM_SIZE, 100);
     }
 
     #[test]
     fn test_serialize_identity() {
-        let d = BigInt::from(-47i64);
-        let a = BigInt::from(1u32);
-        let b = BigInt::from(1u32);
-        let data = serialize(&a, &b, crate::integer::num_bits(&d));
+        let d = Integer::from(-47i64);
+        let a = Integer::ONE;
+        let b = Integer::ONE;
+        let data = serialize(&a, &b, num_bits(&d));
         assert_eq!(data[0], BQFC_IS_1);
     }
 
     #[test]
     fn test_serialize_generator() {
-        let d = BigInt::from(-47i64);
-        let a = BigInt::from(2u32);
-        let b = BigInt::from(1u32);
-        let data = serialize(&a, &b, crate::integer::num_bits(&d));
+        let d = Integer::from(-47i64);
+        let a = Integer::from(2i32);
+        let b = Integer::ONE;
+        let data = serialize(&a, &b, num_bits(&d));
         assert_eq!(data[0], BQFC_IS_GEN);
     }
 
     #[test]
     fn test_bqfc_roundtrip_identity() {
-        let d = BigInt::from(-47i64);
-        let d_bits = crate::integer::num_bits(&d);
-        let a = BigInt::from(1u32);
-        let b = BigInt::from(1u32);
+        let d = Integer::from(-47i64);
+        let d_bits = num_bits(&d);
+        let a = Integer::ONE;
+        let b = Integer::ONE;
         let data = serialize(&a, &b, d_bits);
         let (ra, rb) = deserialize(&d, &data).unwrap();
         assert_eq!(ra, a);
