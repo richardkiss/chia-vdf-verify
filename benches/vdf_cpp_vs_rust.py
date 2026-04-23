@@ -34,6 +34,7 @@ PROOFS_FILE = Path(__file__).parent / "proofs.json"
 @dataclass
 class VDFCase:
     challenge: bytes
+    input_el: bytes
     proof_blob: bytes
     iters: int
     witness_type: int
@@ -49,6 +50,7 @@ def load_proofs(path: str | Path) -> list[VDFCase]:
     return [
         VDFCase(
             challenge=bytes.fromhex(r["challenge"]),
+            input_el=bytes.fromhex(r.get("input_el", IDENTITY.hex())),
             proof_blob=bytes.fromhex(r["proof_blob"]),
             iters=r["iters"],
             witness_type=r["witness_type"],
@@ -72,14 +74,14 @@ def precompute_discriminants(cases: list[VDFCase]) -> None:
 
 def verify_cpp(c: VDFCase) -> bool:
     return chiavdf.verify_n_wesolowski(
-        c.disc_str, IDENTITY, c.proof_blob,
+        c.disc_str, c.input_el, c.proof_blob,
         c.iters, DISC_BITS, c.witness_type,
     )
 
 
 def verify_rust(c: VDFCase) -> bool:
     return verify_n_wesolowski_bytes(
-        c.disc_bytes, IDENTITY, c.proof_blob,
+        c.disc_bytes, c.input_el, c.proof_blob,
         c.iters, DISC_BITS, c.witness_type,
     )
 
