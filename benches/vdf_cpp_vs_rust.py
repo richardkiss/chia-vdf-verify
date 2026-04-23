@@ -2,28 +2,23 @@
 """
 Real-world C++ chiavdf vs Rust chia_vdf_verify benchmark.
 
-Extracts actual VDF proofs from the mainnet blockchain DB (end-of-slot proofs,
-which always use the identity element as input and are self-contained), then
-measures:
-  1. Single-threaded latency: chiavdf vs chia_vdf_verify
-  2. Multi-threaded throughput: chiavdf (GIL-held) vs chia_vdf_verify (GIL-released)
+Uses pre-extracted VDF proofs from benches/proofs.json (shipped with the repo).
+To extract fresh proofs from a blockchain DB, use benches/extract_proofs.py.
 
 Usage:
-  python benches/vdf_cpp_vs_rust.py [--db PATH] [--proofs N] [--threads T]
+  python benches/vdf_cpp_vs_rust.py [--proofs-file PATH] [--threads T]
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
-import sqlite3
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
-import zstd
-import chia_rs
 import chiavdf
 from chia_vdf_verify import (
     create_discriminant_bytes,
@@ -31,56 +26,39 @@ from chia_vdf_verify import (
 )
 
 DISC_BITS = 1024
-# Identity element for class group (input to EOS VDFs)
 IDENTITY = bytes([0x08]) + bytes(99)
+
+PROOFS_FILE = Path(__file__).parent / "proofs.json"
 
 
 @dataclass
 class VDFCase:
-    challenge: bytes          # 32-byte challenge seed
-    proof_blob: bytes         # output_form (100 bytes) + witness bytes
+    challenge: bytes
+    proof_blob: bytes
     iters: int
     witness_type: int
     height: int
-
-    # Pre-computed discriminant representations (set after extraction)
-    disc_str: str = ""        # decimal string for chiavdf
-    disc_bytes: bytes = b""   # sign+magnitude bytes for chia_vdf_verify
+    disc_str: str = ""
+    disc_bytes: bytes = b""
 
 
-# ── Extraction ─────────────────────────────────────────────────────────────────
-
-def extract_proofs(db_path: str, n: int) -> list[VDFCase]:
-    """Pull end-of-slot CC VDF proofs from the block store."""
-    conn = sqlite3.connect(db_path)
-    cases: list[VDFCase] = []
-    # Walk blocks from the tip backwards to find EOS blocks quickly
-    rows = conn.execute(
-        "SELECT block FROM full_blocks ORDER BY height DESC LIMIT 5000"
-    ).fetchall()
-    for (raw,) in rows:
-        block = chia_rs.FullBlock.from_bytes(zstd.decompress(raw))
-        for ss in (block.finished_sub_slots or []):
-            vdf = ss.challenge_chain.challenge_chain_end_of_slot_vdf
-            proof = ss.proofs.challenge_chain_slot_proof
-            blob = vdf.output.data + bytes(proof.witness)
-            cases.append(VDFCase(
-                challenge=bytes(vdf.challenge),
-                proof_blob=blob,
-                iters=vdf.number_of_iterations,
-                witness_type=proof.witness_type,
-                height=block.height,
-            ))
-        if len(cases) >= n:
-            break
-    conn.close()
-    if not cases:
-        sys.exit("No EOS VDF proofs found in DB")
-    return cases[:n]
+def load_proofs(path: str | Path) -> list[VDFCase]:
+    """Load proofs from a JSON fixture file."""
+    with open(path) as f:
+        raw = json.load(f)
+    return [
+        VDFCase(
+            challenge=bytes.fromhex(r["challenge"]),
+            proof_blob=bytes.fromhex(r["proof_blob"]),
+            iters=r["iters"],
+            witness_type=r["witness_type"],
+            height=r["height"],
+        )
+        for r in raw
+    ]
 
 
 def precompute_discriminants(cases: list[VDFCase]) -> None:
-    """Pre-generate discriminants so timing doesn't include disc creation."""
     seen: dict[bytes, tuple[str, bytes]] = {}
     for c in cases:
         if c.challenge not in seen:
@@ -91,8 +69,6 @@ def precompute_discriminants(cases: list[VDFCase]) -> None:
             seen[c.challenge] = (disc_str, disc_bytes)
         c.disc_str, c.disc_bytes = seen[c.challenge]
 
-
-# ── Verification wrappers ──────────────────────────────────────────────────────
 
 def verify_cpp(c: VDFCase) -> bool:
     return chiavdf.verify_n_wesolowski(
@@ -108,10 +84,7 @@ def verify_rust(c: VDFCase) -> bool:
     )
 
 
-# ── Benchmarks ─────────────────────────────────────────────────────────────────
-
 def bench_single_threaded(cases: list[VDFCase], rounds: int = 3) -> dict:
-    """Run each verifier over all cases, return median throughput."""
     results = {}
     for label, fn in [("chiavdf (C++)", verify_cpp), ("chia_vdf_verify (Rust)", verify_rust)]:
         times = []
@@ -132,8 +105,6 @@ def bench_single_threaded(cases: list[VDFCase], rounds: int = 3) -> dict:
 
 
 def bench_multithreaded(cases: list[VDFCase], threads: int, per_thread: int = 10) -> dict:
-    """Submit all cases to a thread pool and measure wall-clock throughput."""
-    # Ensure at least per_thread proofs per thread
     total = threads * per_thread
     workload = (cases * (total // len(cases) + 1))[:total]
     results = {}
@@ -151,8 +122,6 @@ def bench_multithreaded(cases: list[VDFCase], threads: int, per_thread: int = 10
         }
     return results
 
-
-# ── Reporting ──────────────────────────────────────────────────────────────────
 
 def fmt(n: float, unit: str = "") -> str:
     return f"{n:.2f}{unit}"
@@ -197,7 +166,6 @@ def report(cases: list[VDFCase], threads: int) -> None:
               f"(GIL release vs GIL hold)")
     print()
 
-    # Scaling efficiency
     print("── GIL effect (multi/single throughput ratio) ──────────")
     for label in labels:
         st_tp = st[label]["throughput"]
@@ -208,24 +176,22 @@ def report(cases: list[VDFCase], threads: int) -> None:
     print()
 
 
-# ── Entry point ────────────────────────────────────────────────────────────────
-
 def main() -> None:
-    default_db = os.path.expanduser(
-        "~/.chia/rust-vdf-test/db/blockchain_v2_mainnet.sqlite"
-    )
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default=default_db, help="Path to blockchain SQLite DB")
-    parser.add_argument("--proofs", type=int, default=20, help="Number of EOS proofs to extract")
-    parser.add_argument("--threads", type=int, default=8, help="Thread count for multi-threaded bench")
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--proofs-file", default=str(PROOFS_FILE),
+                        help="JSON file with extracted VDF proofs (default: benches/proofs.json)")
+    parser.add_argument("--threads", type=int, default=os.cpu_count() or 4,
+                        help="Thread count for multi-threaded bench")
     args = parser.parse_args()
 
-    if not Path(args.db).exists():
-        sys.exit(f"DB not found: {args.db}")
+    if not Path(args.proofs_file).exists():
+        sys.exit(f"Proofs file not found: {args.proofs_file}\n"
+                 f"Run: python benches/extract_proofs.py")
 
-    print(f"Extracting {args.proofs} EOS VDF proofs from {args.db} ...")
-    cases = extract_proofs(args.db, args.proofs)
-    print(f"  Got {len(cases)} proofs. Pre-computing discriminants ...")
+    print(f"Loading proofs from {args.proofs_file} ...")
+    cases = load_proofs(args.proofs_file)
+    print(f"  Loaded {len(cases)} proofs. Pre-computing discriminants ...")
     precompute_discriminants(cases)
     print("  Done.")
 
