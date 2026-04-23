@@ -2,7 +2,7 @@
 
 ## Result
 
-**C++ was 1.75x faster → now 1.12x faster.** The Rust VDF verifier closes
+**C++ was 1.75x faster → now ~1.06x faster.** The Rust VDF verifier closes
 most of the gap with C++ chiavdf (GMP-backed) through pure Rust optimizations
 using crates.io malachite-nz, with no C dependencies.
 
@@ -18,13 +18,13 @@ using crates.io malachite-nz, with no C dependencies.
 
 | Run | C++ (ms/proof) | Rust (ms/proof) | Ratio |
 |---|---|---|---|
-| 1 | 11.78 | 13.18 | C++ 1.12x faster |
-| 2 | 11.84 | 13.25 | C++ 1.12x faster |
-| 3 | 11.99 | 13.33 | C++ 1.11x faster |
-| 4 | 11.81 | 13.18 | C++ 1.12x faster |
-| 5 | 11.76 | 13.21 | C++ 1.12x faster |
+| 1 | 6.97 | 7.42 | C++ 1.06x faster |
+| 2 | 6.03 | 6.41 | C++ 1.06x faster |
+| 3 | 8.00 | 8.46 | C++ 1.06x faster |
+| 4 | 7.39 | 8.41 | C++ 1.14x faster |
 
-(Absolute times vary with system load; the ratio is stable at **~1.12x**.)
+Built with generic x86-64 target (no `target-cpu=native`), matching what
+ships in wheels. Absolute times vary with system load; ratio is **~1.06x**.
 
 ### Core operation: nudupl + reduce (1024-bit discriminant)
 
@@ -45,13 +45,13 @@ using crates.io malachite-nz, with no C dependencies.
 | 6 | O(n) byte-to-integer via direct limb construction | ~30% on decompression |
 | 7 | Fused multiply-accumulate (`AddMulAssign`/`SubMulAssign`) | ~10% |
 | 8 | Owned-argument GCD variants, avoid double-clones | small |
-| 9 | Compiler: LTO=fat, codegen-units=1, target-cpu=native | ~5-10% |
+| 9 | Compiler: LTO=fat, codegen-units=1 | ~5% |
 | 10 | Optimize `fdiv_r`, BQFC decompression, refactor nudupl | small |
 | 11 | GCD argument swap: return native Bézout cofactor | small |
 
 ## What's left
 
-The remaining ~12% gap comes from GMP vs malachite-nz fundamentals:
+The remaining ~6% gap comes from GMP vs malachite-nz fundamentals:
 
 - **GMP reuses pre-allocated buffers** via thread-local scratch (`mpz_t`);
   malachite allocates fresh `Vec`s per operation.
@@ -61,12 +61,14 @@ The remaining ~12% gap comes from GMP vs malachite-nz fundamentals:
   both Bézout coefficients (the second via a full multiply + divide).
 
 A malachite fork adding `extended_gcd_first_cofactor` (skip second-cofactor
-derivation) and `Integer × i64` (avoid wrapper allocation) closes another
-~14% on nudupl in testing, bringing Rust to approximate parity with C++.
+derivation) and `Integer × i64` (avoid wrapper allocation) would likely
+close the remaining gap, bringing Rust to parity with C++.
 
 ## Environment
 
 - 1024-bit class group discriminants, ~130M iterations per proof
-- Rust stable, release profile with LTO
+- Rust stable, release profile with LTO (generic x86-64 target)
 - malachite-nz 0.9.1 (crates.io, no fork)
 - GMP: system package (used by chiavdf)
+- `.cargo/config.toml` with `target-cpu=native` removed — benchmarks
+  reflect what ships in pip wheels
