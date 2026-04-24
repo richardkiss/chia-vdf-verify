@@ -2,7 +2,7 @@
 
 ## Result
 
-**C++ was 1.75x faster → now ~1.06x faster.** The Rust VDF verifier closes
+**C++ was 1.75x faster → now ~1.14x faster.** The Rust VDF verifier closes
 most of the gap with C++ chiavdf (GMP-backed) through pure Rust optimizations
 using crates.io malachite-nz, with no C dependencies.
 
@@ -14,17 +14,17 @@ using crates.io malachite-nz, with no C dependencies.
 
 ## After optimization
 
-### Real-world: 50 mainnet end-of-slot proofs, single-threaded
+### Real-world: 100 mainnet reward-chain IP proofs, single-threaded
 
-| Run | C++ (ms/proof) | Rust (ms/proof) | Ratio |
+| | C++ (ms/proof) | Rust (ms/proof) | Ratio |
 |---|---|---|---|
-| 1 | 6.97 | 7.42 | C++ 1.06x faster |
-| 2 | 6.03 | 6.41 | C++ 1.06x faster |
-| 3 | 8.00 | 8.46 | C++ 1.06x faster |
-| 4 | 7.39 | 8.41 | C++ 1.14x faster |
+| Single-threaded | 42.85 | 48.97 | **C++ 1.14x faster** |
+| Multi-threaded (32T) | 441 proofs/s | 438 proofs/s | ~parity |
 
+100 proofs, 14 witness types (0–19), iterations 35K–78M (median ~10.6M).
 Built with generic x86-64 target (no `target-cpu=native`), matching what
-ships in wheels. Absolute times vary with system load; ratio is **~1.06x**.
+ships in wheels. Rust's better GIL scaling nearly closes the gap under
+concurrent load.
 
 ### Core operation: nudupl + reduce (1024-bit discriminant)
 
@@ -51,7 +51,7 @@ ships in wheels. Absolute times vary with system load; ratio is **~1.06x**.
 
 ## What's left
 
-The remaining ~6% gap comes from GMP vs malachite-nz fundamentals:
+The remaining ~14% single-threaded gap comes from GMP vs malachite-nz fundamentals:
 
 - **GMP reuses pre-allocated buffers** via thread-local scratch (`mpz_t`);
   malachite allocates fresh `Vec`s per operation.
@@ -66,7 +66,7 @@ close the remaining gap, bringing Rust to parity with C++.
 
 ## Environment
 
-- 1024-bit class group discriminants, ~130M iterations per proof
+- 1024-bit class group discriminants, 35K–78M iterations per proof
 - Rust stable, release profile with LTO (generic x86-64 target)
 - malachite-nz 0.9.1 (crates.io, no fork)
 - GMP: system package (used by chiavdf)
