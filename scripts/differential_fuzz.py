@@ -38,11 +38,16 @@ from chia_rs import FullBlock
 try:
     from chiavdf import create_discriminant as _chiavdf_disc
     from chiavdf import verify_n_wesolowski as _chiavdf_verify
-    from chiavdf import bqfc_deserialize as _chiavdf_bqfc
     CHIAVDF_OK = True
 except ImportError:
     CHIAVDF_OK = False
     print("WARNING: chiavdf not importable — only testing chia_vdf_verify", file=sys.stderr)
+
+try:
+    from chiavdf import bqfc_deserialize as _chiavdf_bqfc
+    CHIAVDF_BQFC = True
+except ImportError:
+    CHIAVDF_BQFC = False
 
 try:
     from chia_vdf_verify import create_discriminant as _rust_disc
@@ -346,7 +351,7 @@ def run_bqfc_check(
     disc_str: str, form_data: bytes, stats: Stats, tag: str, *, strict: bool
 ) -> None:
     """Compare Rust and C++ BQFC deserialization for a single form."""
-    if not CHIAVDF_OK:
+    if not CHIAVDF_BQFC:
         return
 
     rust_ok, cpp_ok = None, None
@@ -574,8 +579,8 @@ def main() -> None:
     total_bqfc = len(cases) * bqfc_mutations
     print(f"\nPhase 3: BQFC form-level differential ({len(cases)} proofs × "
           f"{bqfc_mutations} mutations, strict+lenient)...")
-    if not CHIAVDF_OK:
-        print("  (chiavdf not available — strict/lenient only, no Rust-vs-C++ comparison)")
+    if not CHIAVDF_BQFC:
+        print("  (chiavdf.bqfc_deserialize not available — strict/lenient Rust-only, no Rust-vs-C++ BQFC comparison)")
     t3 = time.time()
 
     for i, case in enumerate(cases):
