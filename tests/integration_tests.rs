@@ -87,7 +87,7 @@ fn test_discriminant_properties() {
 fn test_deserialize_generator_form() {
     let d = get_discriminant();
     let x_s = hex_decode(X_S_HEX);
-    let x = deserialize_form(&d, &x_s).expect("failed to deserialize x");
+    let x = deserialize_form(&d, &x_s, false).expect("failed to deserialize x");
     assert_eq!(x.a, 2i32, "generator form: a should be 2");
     assert_eq!(x.b, 1i32, "generator form: b should be 1");
 }
@@ -97,7 +97,7 @@ fn test_deserialize_generator_form() {
 fn test_deserialize_y_form() {
     let d = get_discriminant();
     let proof_blob = hex_decode(PROOF_BLOB_HEX);
-    let y = deserialize_form(&d, &proof_blob[..BQFC_FORM_SIZE]).expect("failed to deserialize y");
+    let y = deserialize_form(&d, &proof_blob[..BQFC_FORM_SIZE], false).expect("failed to deserialize y");
 
     let disc = &y.b * &y.b - Integer::from(4i32) * &y.a * &y.c;
     assert_eq!(disc, d, "y form has wrong discriminant");
@@ -109,7 +109,7 @@ fn test_deserialize_y_form() {
 fn test_form_exponentiation_preserves_discriminant() {
     let d = get_discriminant();
     let x_s = hex_decode(X_S_HEX);
-    let x = deserialize_form(&d, &x_s).unwrap();
+    let x = deserialize_form(&d, &x_s, false).unwrap();
     let l = Form::compute_l(&d);
 
     for &exp in &[0u64, 1, 2, 10, 50] {
@@ -133,7 +133,7 @@ fn test_form_exponentiation_preserves_discriminant() {
 fn test_zero_exponentiation_is_identity() {
     let d = get_discriminant();
     let x_s = hex_decode(X_S_HEX);
-    let x = deserialize_form(&d, &x_s).unwrap();
+    let x = deserialize_form(&d, &x_s, false).unwrap();
     let l = Form::compute_l(&d);
 
     let result = fast_pow_form_nucomp(&x, &d, &Integer::ZERO, &l);
@@ -146,7 +146,7 @@ fn test_zero_exponentiation_is_identity() {
 fn test_one_exponentiation_is_self() {
     let d = get_discriminant();
     let x_s = hex_decode(X_S_HEX);
-    let x = deserialize_form(&d, &x_s).unwrap();
+    let x = deserialize_form(&d, &x_s, false).unwrap();
     let l = Form::compute_l(&d);
 
     let result = fast_pow_form_nucomp(&x, &d, &Integer::ONE, &l);
@@ -160,7 +160,7 @@ fn test_one_exponentiation_is_self() {
 fn test_nudupl_discriminant() {
     let d = get_discriminant();
     let x_s = hex_decode(X_S_HEX);
-    let x = deserialize_form(&d, &x_s).unwrap();
+    let x = deserialize_form(&d, &x_s, false).unwrap();
     let l = Form::compute_l(&d);
 
     let mut f = x;
@@ -177,7 +177,7 @@ fn test_nudupl_discriminant() {
 fn test_nucomp_commutativity() {
     let d = get_discriminant();
     let x_s = hex_decode(X_S_HEX);
-    let x = deserialize_form(&d, &x_s).unwrap();
+    let x = deserialize_form(&d, &x_s, false).unwrap();
     let l = Form::compute_l(&d);
 
     let y = nudupl(&x, &d, &l);
@@ -198,7 +198,7 @@ fn test_nucomp_commutativity() {
 fn test_reduction_idempotent() {
     let d = get_discriminant();
     let proof_blob = hex_decode(PROOF_BLOB_HEX);
-    let y = deserialize_form(&d, &proof_blob[..BQFC_FORM_SIZE]).unwrap();
+    let y = deserialize_form(&d, &proof_blob[..BQFC_FORM_SIZE], false).unwrap();
 
     let mut y2 = y.clone();
     reduce(&mut y2);
@@ -216,13 +216,13 @@ fn test_bqfc_roundtrip_special_forms() {
 
     let mut identity = Form::identity(&d);
     let bytes = serialize_form(&mut identity, d_bits);
-    let f2 = deserialize_form(&d, &bytes).unwrap();
+    let f2 = deserialize_form(&d, &bytes, false).unwrap();
     assert_eq!(identity.a, f2.a);
     assert_eq!(identity.b, f2.b);
 
     let mut gen = Form::generator(&d);
     let bytes = serialize_form(&mut gen, d_bits);
-    let f2 = deserialize_form(&d, &bytes).unwrap();
+    let f2 = deserialize_form(&d, &bytes, false).unwrap();
     assert_eq!(gen.a, f2.a);
     assert_eq!(gen.b, f2.b);
 }
@@ -235,7 +235,7 @@ fn test_bqfc_roundtrip_y_form() {
     let proof_blob = hex_decode(PROOF_BLOB_HEX);
 
     let original_bytes = &proof_blob[..BQFC_FORM_SIZE];
-    let y = deserialize_form(&d, original_bytes).unwrap();
+    let y = deserialize_form(&d, original_bytes, false).unwrap();
 
     let mut y_for_ser = y.clone();
     let re_serialized = serialize_form(&mut y_for_ser, d_bits);
@@ -253,8 +253,8 @@ fn test_get_b_deterministic() {
     let x_s = hex_decode(X_S_HEX);
     let proof_blob = hex_decode(PROOF_BLOB_HEX);
 
-    let mut x = deserialize_form(&d, &x_s).unwrap();
-    let mut y = deserialize_form(&d, &proof_blob[..BQFC_FORM_SIZE]).unwrap();
+    let mut x = deserialize_form(&d, &x_s, false).unwrap();
+    let mut y = deserialize_form(&d, &proof_blob[..BQFC_FORM_SIZE], false).unwrap();
 
     let b1 = get_b(&d, &mut x, &mut y);
     let b2 = get_b(&d, &mut x, &mut y);
@@ -270,8 +270,8 @@ fn test_fast_pow_correctness() {
     let x_s = hex_decode(X_S_HEX);
     let proof_blob = hex_decode(PROOF_BLOB_HEX);
 
-    let mut x = deserialize_form(&d, &x_s).unwrap();
-    let mut y = deserialize_form(&d, &proof_blob[..BQFC_FORM_SIZE]).unwrap();
+    let mut x = deserialize_form(&d, &x_s, false).unwrap();
+    let mut y = deserialize_form(&d, &proof_blob[..BQFC_FORM_SIZE], false).unwrap();
     let b = get_b(&d, &mut x, &mut y);
 
     let r = fast_pow(ITERS, &b);

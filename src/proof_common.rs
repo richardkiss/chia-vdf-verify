@@ -35,8 +35,9 @@ pub fn serialize_form(f: &mut Form, d_bits: usize) -> Vec<u8> {
 }
 
 /// Deserialize form from BQFC_FORM_SIZE bytes with discriminant D.
-pub fn deserialize_form(d: &Integer, bytes: &[u8]) -> Result<Form, String> {
-    let (a, b) = deserialize(d, bytes)?;
+/// When `strict` is true, reject inflated b0 encodings (|b| > a).
+pub fn deserialize_form(d: &Integer, bytes: &[u8], strict: bool) -> Result<Form, String> {
+    let (a, b) = deserialize(d, bytes, strict)?;
     if a == 0i32 {
         return Err("deserialized form has a=0".to_string());
     }
@@ -119,7 +120,7 @@ mod tests {
         let d_bits = num_bits(&d);
         let mut f = Form::identity(&d);
         let bytes = serialize_form(&mut f, d_bits);
-        let f2 = deserialize_form(&d, &bytes).unwrap();
+        let f2 = deserialize_form(&d, &bytes, true).unwrap();
         assert_eq!(f.a, f2.a);
         assert_eq!(f.b, f2.b);
     }

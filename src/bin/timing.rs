@@ -32,8 +32,8 @@ fn main() {
     let x_s = hex_decode("08000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000");
     let p_blob = hex_decode("020020417eb39c4e14954a817af644fc13d086c26dddab8afea12415b5e685f7883f5740ba01cb75220081c8aba7854cbd52010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000");
 
-    let x = proof_common::deserialize_form(&d, &x_s).unwrap();
-    let y = proof_common::deserialize_form(&d, &p_blob[..bqfc::BQFC_FORM_SIZE]).unwrap();
+    let x = proof_common::deserialize_form(&d, &x_s, false).unwrap();
+    let y = proof_common::deserialize_form(&d, &p_blob[..bqfc::BQFC_FORM_SIZE], false).unwrap();
     let mut xm = x.clone();
     let mut ym = y.clone();
     let b = proof_common::get_b(&d, &mut xm, &mut ym);
@@ -59,7 +59,7 @@ fn main() {
         std::hint::black_box(proof_common::get_b(&d, &mut xm, &mut ym));
     });
 
-    let proof = proof_common::deserialize_form(&d, &p_blob[bqfc::BQFC_FORM_SIZE..]).unwrap();
+    let proof = proof_common::deserialize_form(&d, &p_blob[bqfc::BQFC_FORM_SIZE..], false).unwrap();
     time_fn("fast_pow_form(proof, B=264-bit)", 300, || {
         std::hint::black_box(proof_common::fast_pow_form_nucomp(&proof, &d, &b, &l));
     });

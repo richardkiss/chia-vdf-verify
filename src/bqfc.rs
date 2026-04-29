@@ -85,7 +85,8 @@ fn bqfc_compr(a: &Integer, b: &Integer) -> QfbC {
 }
 
 /// Decompress intermediate representation to (a, b) given discriminant D.
-fn bqfc_decompr(d: &Integer, c: &QfbC) -> Result<(Integer, Integer), String> {
+/// When `strict` is true, reject forms where |b| > a (the reduced-form invariant).
+fn bqfc_decompr(d: &Integer, c: &QfbC, strict: bool) -> Result<(Integer, Integer), String> {
     if c.t == 0i32 {
         return Ok((c.a.clone(), c.a.clone()));
     }
@@ -129,6 +130,10 @@ fn bqfc_decompr(d: &Integer, c: &QfbC) -> Result<(Integer, Integer), String> {
     };
 
     let out_b = if c.b_sign { -out_b } else { out_b };
+
+    if strict && out_b.unsigned_abs_ref() > out_a.unsigned_abs_ref() {
+        return Err("bqfc_decompr: |b| > a in strict mode".to_string());
+    }
 
     Ok((out_a, out_b))
 }
@@ -188,8 +193,9 @@ pub fn serialize(a: &Integer, b: &Integer, d_bits: usize) -> Vec<u8> {
 }
 
 /// Deserialize a form from 100-byte input with discriminant D.
-/// Returns (a, b) or error string.
-pub fn deserialize(d: &Integer, data: &[u8]) -> Result<(Integer, Integer), String> {
+/// When `strict` is true, reject inflated b0 encodings (|b| > a check).
+/// When false, preserve historical (pre-2026) behaviour for consensus compatibility.
+pub fn deserialize(d: &Integer, data: &[u8], strict: bool) -> Result<(Integer, Integer), String> {
     if data.len() != BQFC_FORM_SIZE {
         return Err(format!(
             "expected {} bytes, got {}",
@@ -242,7 +248,7 @@ pub fn deserialize(d: &Integer, data: &[u8]) -> Result<(Integer, Integer), Strin
         b_sign,
     };
 
-    let (out_a, out_b) = bqfc_decompr(d, &c)?;
+    let (out_a, out_b) = bqfc_decompr(d, &c, strict)?;
 
     let canon = serialize(&out_a, &out_b, d_bits);
     if canon != data {
@@ -293,7 +299,7 @@ mod tests {
         let a = Integer::ONE;
         let b = Integer::ONE;
         let data = serialize(&a, &b, d_bits);
-        let (ra, rb) = deserialize(&d, &data).unwrap();
+        let (ra, rb) = deserialize(&d, &data, true).unwrap();
         assert_eq!(ra, a);
         assert_eq!(rb, b);
     }

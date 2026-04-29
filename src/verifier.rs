@@ -80,7 +80,8 @@ pub fn check_proof_of_time_n_wesolowski(
         return false;
     }
 
-    let mut x = match deserialize_form(d, x_s) {
+    let strict = false;
+    let mut x = match deserialize_form(d, x_s, strict) {
         Ok(f) => f,
         Err(_) => return false,
     };
@@ -97,7 +98,7 @@ pub fn check_proof_of_time_n_wesolowski(
         let b = crate::integer::from_bytes_be(b_bytes);
 
         let proof_bytes = &proof_blob[i + 8 + B_BYTES..i + 8 + B_BYTES + form_size];
-        let proof = match deserialize_form(d, proof_bytes) {
+        let proof = match deserialize_form(d, proof_bytes, strict) {
             Ok(f) => f,
             Err(_) => return false,
         };
@@ -122,11 +123,11 @@ pub fn check_proof_of_time_n_wesolowski(
         remaining_iters -= segment_iters;
     }
 
-    let y = match deserialize_form(d, &proof_blob[..form_size]) {
+    let y = match deserialize_form(d, &proof_blob[..form_size], strict) {
         Ok(f) => f,
         Err(_) => return false,
     };
-    let proof = match deserialize_form(d, &proof_blob[form_size..2 * form_size]) {
+    let proof = match deserialize_form(d, &proof_blob[form_size..2 * form_size], strict) {
         Ok(f) => f,
         Err(_) => return false,
     };
