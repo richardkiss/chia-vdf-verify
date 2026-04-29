@@ -38,21 +38,19 @@ from chia.consensus.default_constants import DEFAULT_CONSTANTS
 from chia.types.blockchain_format.classgroup import ClassgroupElement
 
 try:
-    import chiavdf as _chiavdf_module
     from chiavdf import create_discriminant as _chiavdf_disc
     from chiavdf import verify_n_wesolowski as _chiavdf_verify
+    from chiavdf import bqfc_deserialize as _chiavdf_bqfc
     CHIAVDF_OK = True
 except ImportError:
     CHIAVDF_OK = False
     print("WARNING: chiavdf not importable — only testing chia_vdf_verify", file=sys.stderr)
 
 try:
-    import chia_vdf_verify as _rust_module
     from chia_vdf_verify import create_discriminant as _rust_disc
     from chia_vdf_verify import verify_n_wesolowski as _rust_verify
-    RUST_OK = True
+    from chia_vdf_verify import bqfc_deserialize as _rust_bqfc
 except ImportError:
-    RUST_OK = False
     print("ERROR: chia_vdf_verify not importable", file=sys.stderr)
     sys.exit(1)
 
@@ -72,6 +70,9 @@ class ProofCase:
     witness_type: int
 
 
+BQFC_FORM_SIZE = 100
+
+
 @dataclass
 class Stats:
     valid_proofs: int = 0
@@ -84,6 +85,10 @@ class Stats:
     mutations_both_accept: int = 0
     rust_crashes: int = 0
     chiavdf_crashes: int = 0
+    bqfc_tested: int = 0
+    bqfc_agree: int = 0
+    bqfc_disagree: int = 0
+    bqfc_strict_only_reject: int = 0
     disagreements: list[str] = field(default_factory=list)
 
 
@@ -242,6 +247,158 @@ def mutate_bytes(data: bytes, rng: random.Random, n_flips: int = 1) -> bytes:
         pos = rng.randrange(len(arr))
         arr[pos] ^= rng.randint(1, 255)  # guaranteed flip (no-op avoided)
     return bytes(arr)
+
+
+def bqfc_active_bytes(d_bits: int) -> int:
+    """Number of semantically meaningful bytes in a BQFC form for given disc bits."""
+    d_bits_rounded = (d_bits + 31) & ~31
+    return d_bits_rounded // 32 * 3 + 4
+
+
+def mutate_form_structured(form_bytes: bytes, d_bits: int, rng: random.Random) -> tuple[bytes, str]:
+    """Structure-aware mutation of a single 100-byte BQFC form.
+
+    Understands the BQFC layout:
+      byte 0: flags (b_sign, t_sign, is_1, is_gen)
+      byte 1: g_size
+      bytes 2..: a, t, g, b0 fields (sizes depend on d_bits and g_size)
+      trailing bytes: zero padding
+
+    Returns (mutated_bytes, description).
+    """
+    arr = bytearray(form_bytes)
+    active = bqfc_active_bytes(d_bits)
+    d_bits_rounded = (d_bits + 31) & ~31
+
+    strategy = rng.choices(
+        ["flag_flip", "g_size_change", "b0_inflate", "a_field_tweak",
+         "t_field_tweak", "padding_nonzero", "random_active"],
+        weights=[15, 10, 25, 15, 15, 10, 10],
+    )[0]
+
+    if strategy == "flag_flip":
+        bit = rng.choice([0, 1, 2, 3])  # b_sign, t_sign, is_1, is_gen
+        arr[0] ^= 1 << bit
+        desc = f"flag_flip_bit{bit}"
+
+    elif strategy == "g_size_change":
+        old = arr[1]
+        arr[1] = rng.randint(0, 255)
+        desc = f"g_size_{old}->{arr[1]}"
+
+    elif strategy == "b0_inflate":
+        g_size = arr[1]
+        if g_size < d_bits_rounded // 32:
+            b0_offset = 2 + (d_bits_rounded // 16 - g_size) + (d_bits_rounded // 32 - g_size) + (g_size + 1)
+            b0_end = b0_offset + g_size + 1
+            if b0_end <= BQFC_FORM_SIZE:
+                pos = rng.randrange(b0_offset, b0_end)
+                arr[pos] ^= rng.choice([0x04, 0x08, 0x10, 0x20, 0x40, 0x80])
+                desc = f"b0_inflate_byte{pos}_val{arr[pos]:02x}"
+            else:
+                arr[rng.randrange(2, min(active, BQFC_FORM_SIZE))] ^= rng.randint(1, 255)
+                desc = "b0_inflate_fallback"
+        else:
+            arr[rng.randrange(2, min(active, BQFC_FORM_SIZE))] ^= rng.randint(1, 255)
+            desc = "b0_inflate_fallback"
+
+    elif strategy == "a_field_tweak":
+        g_size = arr[1]
+        a_start = 2
+        a_len = d_bits_rounded // 16 - g_size
+        if 0 < a_len <= BQFC_FORM_SIZE - 2:
+            pos = a_start + rng.randrange(a_len)
+            arr[pos] ^= rng.randint(1, 255)
+            desc = f"a_tweak_byte{pos}"
+        else:
+            arr[rng.randrange(2, min(active, BQFC_FORM_SIZE))] ^= rng.randint(1, 255)
+            desc = "a_tweak_fallback"
+
+    elif strategy == "t_field_tweak":
+        g_size = arr[1]
+        a_len = d_bits_rounded // 16 - g_size
+        t_start = 2 + a_len
+        t_len = d_bits_rounded // 32 - g_size
+        if 0 < t_len and t_start + t_len <= BQFC_FORM_SIZE:
+            pos = t_start + rng.randrange(t_len)
+            arr[pos] ^= rng.randint(1, 255)
+            desc = f"t_tweak_byte{pos}"
+        else:
+            arr[rng.randrange(2, min(active, BQFC_FORM_SIZE))] ^= rng.randint(1, 255)
+            desc = "t_tweak_fallback"
+
+    elif strategy == "padding_nonzero":
+        if active < BQFC_FORM_SIZE:
+            pos = rng.randrange(active, BQFC_FORM_SIZE)
+            arr[pos] = rng.randint(1, 255)
+            desc = f"padding_byte{pos}_val{arr[pos]:02x}"
+        else:
+            arr[rng.randrange(len(arr))] ^= rng.randint(1, 255)
+            desc = "padding_fallback"
+
+    else:  # random_active
+        pos = rng.randrange(min(active, BQFC_FORM_SIZE))
+        arr[pos] ^= rng.randint(1, 255)
+        desc = f"random_active_byte{pos}"
+
+    return bytes(arr), desc
+
+
+def run_bqfc_check(
+    disc_str: str, form_data: bytes, stats: Stats, tag: str, *, strict: bool
+) -> None:
+    """Compare Rust and C++ BQFC deserialization for a single form."""
+    if not CHIAVDF_OK:
+        return
+
+    rust_ok, cpp_ok = None, None
+    try:
+        _rust_bqfc(disc_str, form_data, strict=strict)
+        rust_ok = True
+    except Exception:
+        rust_ok = False
+
+    try:
+        _chiavdf_bqfc(disc_str, form_data, strict=strict)
+        cpp_ok = True
+    except Exception:
+        cpp_ok = False
+
+    stats.bqfc_tested += 1
+    if rust_ok == cpp_ok:
+        stats.bqfc_agree += 1
+    else:
+        stats.bqfc_disagree += 1
+        mode = "strict" if strict else "lenient"
+        msg = f"BQFC DISAGREE ({mode}) rust={rust_ok} cpp={cpp_ok} {tag}"
+        stats.disagreements.append(msg)
+        print(f"  !! {msg}", flush=True)
+
+
+def run_bqfc_strict_lenient(
+    disc_str: str, form_data: bytes, stats: Stats, tag: str,
+) -> None:
+    """Check that strict rejects a superset of what lenient rejects."""
+
+    lenient_ok, strict_ok = None, None
+    try:
+        _rust_bqfc(disc_str, form_data, strict=False)
+        lenient_ok = True
+    except Exception:
+        lenient_ok = False
+
+    try:
+        _rust_bqfc(disc_str, form_data, strict=True)
+        strict_ok = True
+    except Exception:
+        strict_ok = False
+
+    if strict_ok and not lenient_ok:
+        msg = f"STRICT ACCEPTED BUT LENIENT REJECTED — invariant violation! {tag}"
+        stats.disagreements.append(msg)
+        print(f"  !! {msg}", flush=True)
+    elif not strict_ok and lenient_ok:
+        stats.bqfc_strict_only_reject += 1
 
 
 def run_valid_check(case: ProofCase, stats: Stats) -> None:
@@ -413,9 +570,52 @@ def main() -> None:
             sys.stdout.flush()
 
     elapsed2 = time.time() - t2
+
+    # Phase 3: BQFC-level differential testing (strict vs lenient, Rust vs C++)
+    bqfc_mutations = args.mutations
+    total_bqfc = len(cases) * bqfc_mutations
+    print(f"\nPhase 3: BQFC form-level differential ({len(cases)} proofs × "
+          f"{bqfc_mutations} mutations, strict+lenient)...")
+    if not CHIAVDF_OK:
+        print("  (chiavdf not available — strict/lenient only, no Rust-vs-C++ comparison)")
+    t3 = time.time()
+
+    for i, case in enumerate(cases):
+        y_form = case.output[:BQFC_FORM_SIZE]
+
+        for strict in (True, False):
+            run_bqfc_check(case.disc_str, y_form, stats,
+                           f"valid_h{case.height}_{case.label}", strict=strict)
+
+        run_bqfc_strict_lenient(case.disc_str, y_form, stats,
+                                f"valid_h{case.height}_{case.label}")
+
+        for m in range(bqfc_mutations):
+            mutated, desc = mutate_form_structured(y_form, case.disc_size, rng)
+            tag = f"h{case.height}_{case.label}_{desc}"
+
+            for strict in (True, False):
+                run_bqfc_check(case.disc_str, mutated, stats, tag, strict=strict)
+
+            run_bqfc_strict_lenient(case.disc_str, mutated, stats, tag)
+
+        if (i + 1) % 10 == 0:
+            done = (i + 1) * bqfc_mutations
+            elapsed = time.time() - t3
+            rate = done / elapsed if elapsed > 0 else 0
+            print(
+                f"  [{done}/{total_bqfc}] "
+                f"agree={stats.bqfc_agree} disagree={stats.bqfc_disagree} "
+                f"strict_only_reject={stats.bqfc_strict_only_reject} "
+                f"rate={rate:.0f}/s"
+            )
+            sys.stdout.flush()
+
+    elapsed3 = time.time() - t3
+    print(f"\nPhase 3 done in {elapsed3:.1f}s")
+
     total_elapsed = time.time() - t0
 
-    print(f"\nPhase 2 done in {elapsed2:.1f}s")
     print()
     print("=" * 60)
     print("RESULTS SUMMARY")
@@ -435,10 +635,21 @@ def main() -> None:
     print(f"Rust exceptions:           {stats.rust_crashes}")
     if CHIAVDF_OK:
         print(f"Chiavdf exceptions:        {stats.chiavdf_crashes}  (bqfc_export overflow on malformed inputs, counted as rejection)")
+    print()
+    print(f"BQFC form-level tests:     {stats.bqfc_tested}")
+    print(f"  Rust/C++ agree:          {stats.bqfc_agree}")
+    print(f"  Rust/C++ disagree:       {stats.bqfc_disagree}  ← BUG if > 0")
+    print(f"  Strict-only rejects:     {stats.bqfc_strict_only_reject}  (expected for b0 inflation)")
+    print()
     print(f"Total time:                {total_elapsed:.1f}s")
     print("=" * 60)
 
-    total_disagree = stats.valid_disagree + stats.mutations_rust_only_accept + stats.mutations_chiavdf_only_accept
+    total_disagree = (
+        stats.valid_disagree
+        + stats.mutations_rust_only_accept
+        + stats.mutations_chiavdf_only_accept
+        + stats.bqfc_disagree
+    )
     if total_disagree == 0 and stats.rust_crashes == 0:
         print("\nOK: No disagreements found. Rust verifier matches chiavdf.")
     else:
