@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.10"
 # dependencies = [
-#   "chia-rs>=0.38",
+#   "chia-rs>=0.19",
 #   "zstd>=1.5",
 # ]
 # ///
@@ -34,8 +34,6 @@ from typing import Optional
 
 import zstd
 from chia_rs import FullBlock
-from chia.consensus.default_constants import DEFAULT_CONSTANTS
-from chia.types.blockchain_format.classgroup import ClassgroupElement
 
 try:
     from chiavdf import create_discriminant as _chiavdf_disc
@@ -54,8 +52,8 @@ except ImportError:
     print("ERROR: chia_vdf_verify not importable", file=sys.stderr)
     sys.exit(1)
 
-IDENTITY = ClassgroupElement.get_default_element()
-CONSTANTS = DEFAULT_CONSTANTS
+DISCRIMINANT_SIZE_BITS = 1024
+IDENTITY_FORM = b"\x08" + b"\x00" * 99  # IS_GEN form: a=2, b=1
 
 
 @dataclass
@@ -137,7 +135,7 @@ def extract_proofs(db_path: str, sample_size: int, rng: random.Random) -> list[P
 
     cases: list[ProofCase] = []
 
-    disc_size = CONSTANTS.DISCRIMINANT_SIZE_BITS
+    disc_size = DISCRIMINANT_SIZE_BITS
 
     for height in sorted(candidates):
         if len(cases) >= sample_size:
@@ -169,7 +167,7 @@ def extract_proofs(db_path: str, sample_size: int, rng: random.Random) -> list[P
                     height=height,
                     label="cc_sp",
                     disc_str=_disc_str(bytes(info.challenge)),
-                    input_el=bytes(IDENTITY.data),
+                    input_el=IDENTITY_FORM,
                     output=bytes(info.output.data) + bytes(p.witness),
                     n_iters=int(info.number_of_iterations),
                     disc_size=disc_size,
@@ -184,7 +182,7 @@ def extract_proofs(db_path: str, sample_size: int, rng: random.Random) -> list[P
                     height=height,
                     label="cc_ip",
                     disc_str=_disc_str(bytes(info.challenge)),
-                    input_el=bytes(IDENTITY.data),
+                    input_el=IDENTITY_FORM,
                     output=bytes(info.output.data) + bytes(p.witness),
                     n_iters=int(info.number_of_iterations),
                     disc_size=disc_size,
@@ -198,7 +196,7 @@ def extract_proofs(db_path: str, sample_size: int, rng: random.Random) -> list[P
                 height=height,
                 label="rc_sp",
                 disc_str=_disc_str(bytes(info.challenge)),
-                input_el=bytes(IDENTITY.data),
+                input_el=IDENTITY_FORM,
                 output=bytes(info.output.data) + bytes(p.witness),
                 n_iters=int(info.number_of_iterations),
                 disc_size=disc_size,
@@ -212,7 +210,7 @@ def extract_proofs(db_path: str, sample_size: int, rng: random.Random) -> list[P
                 height=height,
                 label="rc_ip",
                 disc_str=_disc_str(bytes(info.challenge)),
-                input_el=bytes(IDENTITY.data),
+                input_el=IDENTITY_FORM,
                 output=bytes(info.output.data) + bytes(p.witness),
                 n_iters=int(info.number_of_iterations),
                 disc_size=disc_size,
@@ -227,7 +225,7 @@ def extract_proofs(db_path: str, sample_size: int, rng: random.Random) -> list[P
                     height=height,
                     label="icc_ip",
                     disc_str=_disc_str(bytes(info.challenge)),
-                    input_el=bytes(IDENTITY.data),
+                    input_el=IDENTITY_FORM,
                     output=bytes(info.output.data) + bytes(p.witness),
                     n_iters=int(info.number_of_iterations),
                     disc_size=disc_size,

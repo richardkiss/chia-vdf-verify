@@ -108,11 +108,11 @@ fn bqfc_deserialize(
     let d = disc
         .parse::<malachite_nz::integer::Integer>()
         .map_err(|_| pyo3::exceptions::PyValueError::new_err("bad discriminant"))?;
-    let (a, b) = crate::bqfc::deserialize(&d, data, strict)
+    let f = crate::proof_common::deserialize_form(&d, data, strict)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
     Ok((
-        crate::integer::to_signed_bytes_be(&a),
-        crate::integer::to_signed_bytes_be(&b),
+        crate::integer::to_signed_bytes_be(&f.a),
+        crate::integer::to_signed_bytes_be(&f.b),
     ))
 }
 
