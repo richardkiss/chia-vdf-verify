@@ -94,11 +94,34 @@ fn verify_n_wesolowski_bytes(
     })
 }
 
+/// Deserialize a BQFC-compressed form, returning (a_bytes, b_bytes) or raising ValueError.
+/// disc: discriminant as decimal string (negative)
+/// data: 100-byte BQFC form
+/// strict: if true, reject forms where |b| > a
+#[pyfunction]
+#[pyo3(signature = (disc, data, *, strict = true))]
+fn bqfc_deserialize(
+    disc: &str,
+    data: &[u8],
+    strict: bool,
+) -> PyResult<(Vec<u8>, Vec<u8>)> {
+    let d = disc
+        .parse::<malachite_nz::integer::Integer>()
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("bad discriminant"))?;
+    let (a, b) = crate::bqfc::deserialize(&d, data, strict)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+    Ok((
+        crate::integer::to_signed_bytes_be(&a),
+        crate::integer::to_signed_bytes_be(&b),
+    ))
+}
+
 #[pymodule]
 fn chia_vdf_verify(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(create_discriminant, m)?)?;
     m.add_function(wrap_pyfunction!(create_discriminant_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(verify_n_wesolowski, m)?)?;
     m.add_function(wrap_pyfunction!(verify_n_wesolowski_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(bqfc_deserialize, m)?)?;
     Ok(())
 }
