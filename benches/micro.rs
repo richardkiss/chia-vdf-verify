@@ -11,21 +11,21 @@ fn bench_micro(c: &mut Criterion) {
     let d = create_discriminant(b"bench_micro_seed", 1024);
     let l = Form::compute_l(&d);
     let gen = Form::generator(&d);
-    
+
     let mut f = gen.clone();
     for _ in 0..20 {
         f = nudupl(&f, &d, &l);
         reduce(&mut f);
     }
     let g = f.clone();
-    
+
     c.bench_function("nudupl_1024", |b| {
         b.iter(|| {
             let r = nudupl(&f, &d, &l);
             std::hint::black_box(r);
         });
     });
-    
+
     c.bench_function("reduce_1024", |b| {
         let mut unreduced = nudupl(&f, &d, &l);
         b.iter(|| {
@@ -34,14 +34,14 @@ fn bench_micro(c: &mut Criterion) {
             std::hint::black_box(copy);
         });
     });
-    
+
     c.bench_function("nucomp_1024", |b| {
         b.iter(|| {
             let r = nucomp(&f, &g, &d, &l);
             std::hint::black_box(r);
         });
     });
-    
+
     c.bench_function("xgcd_partial_1024", |b| {
         b.iter(|| {
             let mut co2 = Integer::ZERO;

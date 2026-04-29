@@ -24,13 +24,17 @@ Recommended: run under /home/kiss/projects/chia-blockchain/.venv
 from __future__ import annotations
 
 import argparse
+import os
 import random
+import select
 import sqlite3
 import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+CALL_TIMEOUT = 30  # seconds — any single verifier call exceeding this is a hang
 
 import zstd
 from chia_rs import FullBlock
@@ -92,25 +96,78 @@ class Stats:
     bqfc_agree: int = 0
     bqfc_disagree: int = 0
     bqfc_strict_only_reject: int = 0
+    rust_timeouts: int = 0
+    chiavdf_timeouts: int = 0
     disagreements: list[str] = field(default_factory=list)
 
 
-def call_rust(disc: str, input_el: bytes, output: bytes, n_iters: int, disc_size: int, witness_type: int) -> Optional[bool]:
+def _fork_call(fn, *args, timeout=CALL_TIMEOUT) -> str:
+    """Call fn(*args) in a forked child with a hard kill timeout.
+
+    Returns "true", "false", "error", or "timeout".
+    fork() is cheap on Linux (COW) and the child inherits loaded C extensions.
+    """
+    r, w = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(r)
+        try:
+            result = fn(*args)
+            os.write(w, b"1" if result else b"0")
+        except Exception:
+            os.write(w, b"E")
+        os.close(w)
+        os._exit(0)
+    # parent
+    os.close(w)
+    deadline = time.monotonic() + timeout
     try:
-        return bool(_rust_verify(disc, input_el, output, n_iters, disc_size, witness_type))
-    except Exception:
-        return None  # unexpected exception → treated as rejection
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                os.kill(pid, 9)
+                os.waitpid(pid, 0)
+                return "timeout"
+            ready, _, _ = select.select([r], [], [], min(remaining, 0.5))
+            if ready:
+                data = os.read(r, 1)
+                os.waitpid(pid, 0)
+                if data == b"1":
+                    return "true"
+                elif data == b"0":
+                    return "false"
+                return "error"
+    finally:
+        os.close(r)
 
 
-def call_chiavdf(disc: str, input_el: bytes, output: bytes, n_iters: int, disc_size: int, witness_type: int) -> Optional[bool]:
+_TIMEOUT_SENTINEL = "TIMEOUT"
+
+
+def call_rust(disc: str, input_el: bytes, output: bytes, n_iters: int, disc_size: int, witness_type: int):
+    result = _fork_call(_rust_verify, disc, input_el, output, n_iters, disc_size, witness_type)
+    if result == "timeout":
+        print(f"  !! RUST TIMEOUT (>{CALL_TIMEOUT}s)", flush=True)
+        return _TIMEOUT_SENTINEL
+    if result == "true":
+        return True
+    if result == "false":
+        return False
+    return None
+
+
+def call_chiavdf(disc: str, input_el: bytes, output: bytes, n_iters: int, disc_size: int, witness_type: int):
     if not CHIAVDF_OK:
         return None
-    try:
-        return bool(_chiavdf_verify(disc, input_el, output, n_iters, disc_size, witness_type))
-    except Exception:
-        # chiavdf raises exceptions (bqfc_export overflow etc.) on malformed inputs
-        # treat as rejection — not a crash in the traditional sense
-        return None
+    result = _fork_call(_chiavdf_verify, disc, input_el, output, n_iters, disc_size, witness_type)
+    if result == "timeout":
+        print(f"  !! CHIAVDF TIMEOUT (>{CALL_TIMEOUT}s)", flush=True)
+        return _TIMEOUT_SENTINEL
+    if result == "true":
+        return True
+    if result == "false":
+        return False
+    return None
 
 
 def extract_proofs(db_path: str, sample_size: int, rng: random.Random) -> list[ProofCase]:
@@ -420,9 +477,13 @@ def run_valid_check(case: ProofCase, stats: Stats) -> None:
     rust_ok = rust_result is True
     chiavdf_ok = chiavdf_result is True or not CHIAVDF_OK
 
-    if rust_result is None:
+    if rust_result is _TIMEOUT_SENTINEL:
+        stats.rust_timeouts += 1
+    elif rust_result is None:
         stats.rust_crashes += 1
-    if chiavdf_result is None and CHIAVDF_OK:
+    if chiavdf_result is _TIMEOUT_SENTINEL:
+        stats.chiavdf_timeouts += 1
+    elif chiavdf_result is None and CHIAVDF_OK:
         stats.chiavdf_crashes += 1
 
     if CHIAVDF_OK and rust_result != chiavdf_result:
@@ -445,6 +506,29 @@ def run_valid_check(case: ProofCase, stats: Stats) -> None:
             print(f"  !! {msg}", flush=True)
 
 
+def _save_timeout_case(case, mutated_output: bytes, tag: str, which: str) -> None:
+    """Dump a timeout-triggering mutation to disk for later reproduction."""
+    import json
+    out_dir = Path("fuzz_timeouts")
+    out_dir.mkdir(exist_ok=True)
+    fname = out_dir / f"{which}_h{case.height}_{case.label}_{tag}.json"
+    payload = {
+        "which": which,
+        "height": case.height,
+        "label": case.label,
+        "tag": tag,
+        "disc": case.disc_str,
+        "disc_size": case.disc_size,
+        "n_iters": case.n_iters,
+        "witness_type": case.witness_type,
+        "input_el": case.input_el.hex(),
+        "original_output": case.output.hex(),
+        "mutated_output": mutated_output.hex(),
+    }
+    fname.write_text(json.dumps(payload, indent=2))
+    print(f"  → saved timeout case to {fname}", flush=True)
+
+
 def run_mutation(case: ProofCase, mutated_output: bytes, stats: Stats, tag: str) -> None:
     """Run both verifiers on a mutated proof and record agreement."""
     rust_result = call_rust(
@@ -456,9 +540,15 @@ def run_mutation(case: ProofCase, mutated_output: bytes, stats: Stats, tag: str)
         case.n_iters, case.disc_size, case.witness_type,
     ) if CHIAVDF_OK else None
 
-    if rust_result is None:
+    if rust_result is _TIMEOUT_SENTINEL:
+        stats.rust_timeouts += 1
+        _save_timeout_case(case, mutated_output, tag, "rust")
+    elif rust_result is None:
         stats.rust_crashes += 1
-    if chiavdf_result is None and CHIAVDF_OK:
+    if chiavdf_result is _TIMEOUT_SENTINEL:
+        stats.chiavdf_timeouts += 1
+        _save_timeout_case(case, mutated_output, tag, "chiavdf")
+    elif chiavdf_result is None and CHIAVDF_OK:
         stats.chiavdf_crashes += 1
 
     stats.mutations_tested += 1
@@ -541,8 +631,10 @@ def main() -> None:
     print(f"  Agree:        {stats.valid_agree}")
     print(f"  Disagree:     {stats.valid_disagree}")
     print(f"  Rust exceptions: {stats.rust_crashes}")
+    print(f"  Rust timeouts:   {stats.rust_timeouts}")
     if CHIAVDF_OK:
         print(f"  Chiavdf exceptions: {stats.chiavdf_crashes}")
+        print(f"  Chiavdf timeouts:   {stats.chiavdf_timeouts}")
     sys.stdout.flush()
 
     # Phase 2: mutation testing
@@ -558,19 +650,21 @@ def main() -> None:
             tag = f"m{m}_f{n_flips}"
             run_mutation(case, mutated, stats, tag)
 
-        if (i + 1) % 10 == 0:
-            done = (i + 1) * args.mutations
-            elapsed = time.time() - t2
-            rate = done / elapsed if elapsed > 0 else 0
-            print(
-                f"  [{done}/{total_mutations}] "
-                f"both_reject={stats.mutations_both_reject} "
-                f"rust_only_accept={stats.mutations_rust_only_accept} "
-                f"chiavdf_only_accept={stats.mutations_chiavdf_only_accept} "
-                f"both_accept={stats.mutations_both_accept} "
-                f"rate={rate:.0f}/s"
-            )
-            sys.stdout.flush()
+        done = (i + 1) * args.mutations
+        elapsed = time.time() - t2
+        rate = done / elapsed if elapsed > 0 else 0
+        timeout_info = ""
+        if stats.rust_timeouts or stats.chiavdf_timeouts:
+            timeout_info = f" timeouts(r={stats.rust_timeouts},c={stats.chiavdf_timeouts})"
+        print(
+            f"  [{done}/{total_mutations}] "
+            f"both_reject={stats.mutations_both_reject} "
+            f"rust_only_accept={stats.mutations_rust_only_accept} "
+            f"chiavdf_only_accept={stats.mutations_chiavdf_only_accept} "
+            f"both_accept={stats.mutations_both_accept}{timeout_info} "
+            f"rate={rate:.0f}/s",
+            flush=True,
+        )
 
     elapsed2 = time.time() - t2
 
@@ -636,8 +730,10 @@ def main() -> None:
     print(f"  Both accepted (surprise): {stats.mutations_both_accept}  ← unexpected if > 0")
     print()
     print(f"Rust exceptions:           {stats.rust_crashes}")
+    print(f"Rust timeouts:             {stats.rust_timeouts}")
     if CHIAVDF_OK:
         print(f"Chiavdf exceptions:        {stats.chiavdf_crashes}  (bqfc_export overflow on malformed inputs, counted as rejection)")
+        print(f"Chiavdf timeouts:          {stats.chiavdf_timeouts}")
     print()
     print(f"BQFC form-level tests:     {stats.bqfc_tested}")
     print(f"  Rust/C++ agree:          {stats.bqfc_agree}")

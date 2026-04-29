@@ -1,8 +1,9 @@
 //! Quadratic form (a, b, c) with discriminant D, where b^2 - 4ac = D.
 //! Always in reduced form: |b| <= a <= c, with b >= 0 when a == c or |b| == a.
 
-use crate::integer::{divexact, num_bits};
+use crate::integer::num_bits;
 use crate::reducer::reduce;
+use malachite_base::num::arithmetic::traits::DivRem;
 use malachite_base::num::basic::traits::One;
 use malachite_nz::integer::Integer;
 
@@ -20,12 +21,19 @@ impl Form {
     }
 
     /// Construct form from (a, b) and discriminant D, computing c = (b^2 - D) / (4a).
-    pub fn from_abd(a: Integer, b: Integer, d: &Integer) -> Self {
+    /// Returns Err if a <= 0 or (b^2 - D) is not divisible by 4a.
+    pub fn from_abd(a: Integer, b: Integer, d: &Integer) -> Result<Self, String> {
+        if a <= 0i32 {
+            return Err("Invalid form: a must be positive".into());
+        }
         let b2 = &b * &b;
         let num = b2 - d;
         let denom = &a << 2u64;
-        let c = divexact(&num, &denom);
-        Form { a, b, c }
+        let (c, rem) = (&num).div_rem(&denom);
+        if rem != 0i32 {
+            return Err("Invalid form: can't find c".into());
+        }
+        Ok(Form { a, b, c })
     }
 
     /// Identity form: (1, 1, (1-D)/4).

@@ -54,13 +54,7 @@ fn verify_n_wesolowski(
     let input_el = input_el.to_vec();
     let output = output.to_vec();
     py.allow_threads(move || {
-        check_proof_of_time_n_wesolowski(
-            &d,
-            &input_el,
-            &output,
-            number_of_iterations,
-            witness_type,
-        )
+        check_proof_of_time_n_wesolowski(&d, &input_el, &output, number_of_iterations, witness_type)
     })
 }
 
@@ -84,13 +78,7 @@ fn verify_n_wesolowski_bytes(
     let input_el = input_el.to_vec();
     let output = output.to_vec();
     py.allow_threads(move || {
-        check_proof_of_time_n_wesolowski(
-            &d,
-            &input_el,
-            &output,
-            number_of_iterations,
-            witness_type,
-        )
+        check_proof_of_time_n_wesolowski(&d, &input_el, &output, number_of_iterations, witness_type)
     })
 }
 
@@ -100,11 +88,7 @@ fn verify_n_wesolowski_bytes(
 /// strict: if true, reject forms where |b| > a
 #[pyfunction]
 #[pyo3(signature = (disc, data, *, strict = true))]
-fn bqfc_deserialize(
-    disc: &str,
-    data: &[u8],
-    strict: bool,
-) -> PyResult<(Vec<u8>, Vec<u8>)> {
+fn bqfc_deserialize(disc: &str, data: &[u8], strict: bool) -> PyResult<(Vec<u8>, Vec<u8>)> {
     let d = disc
         .parse::<malachite_nz::integer::Integer>()
         .map_err(|_| pyo3::exceptions::PyValueError::new_err("bad discriminant"))?;

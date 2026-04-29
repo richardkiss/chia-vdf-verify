@@ -97,7 +97,8 @@ fn test_deserialize_generator_form() {
 fn test_deserialize_y_form() {
     let d = get_discriminant();
     let proof_blob = hex_decode(PROOF_BLOB_HEX);
-    let y = deserialize_form(&d, &proof_blob[..BQFC_FORM_SIZE], false).expect("failed to deserialize y");
+    let y = deserialize_form(&d, &proof_blob[..BQFC_FORM_SIZE], false)
+        .expect("failed to deserialize y");
 
     let disc = &y.b * &y.b - Integer::from(4i32) * &y.a * &y.c;
     assert_eq!(disc, d, "y form has wrong discriminant");
@@ -439,7 +440,7 @@ fn test_non_canonical_y_padding_rejected() {
 #[test]
 fn test_is1_isgen_trailing_bytes_ignored() {
     let d = get_discriminant();
-    let mut x_s = hex_decode(X_S_HEX);       // IS_GEN (0x08): bytes 1-99 ignored
+    let mut x_s = hex_decode(X_S_HEX); // IS_GEN (0x08): bytes 1-99 ignored
     let mut proof_blob = hex_decode(PROOF_BLOB_HEX); // pi form is IS_1 (0x04): bytes 101-199 ignored
 
     x_s[99] ^= 0xff;

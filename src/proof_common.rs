@@ -41,7 +41,7 @@ pub fn deserialize_form(d: &Integer, bytes: &[u8], strict: bool) -> Result<Form,
     if a == 0i32 {
         return Err("deserialized form has a=0".to_string());
     }
-    let f = Form::from_abd(a, b, d);
+    let f = Form::from_abd(a, b, d)?;
     if !f.is_reduced() {
         return Err("deserialized form is not reduced".to_string());
     }
