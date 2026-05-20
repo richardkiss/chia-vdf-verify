@@ -120,13 +120,14 @@ fn gcd_ext3(a: &Integer, b: &Integer) -> (Integer, Integer, Integer) {
 /// Duplicate a form: result = f^2.
 /// This is qfb_nudupl.
 pub fn nudupl(f: &Form, d: &Integer, l: &Integer) -> Form {
-    let b_abs = if f.b < 0i32 { -&f.b } else { f.b.clone() };
+    let b_is_neg = f.b < 0i32;
+    let b_abs = if b_is_neg { -&f.b } else { f.b.clone() };
     let (s, v2) = {
         // Swap argument order: pass b_abs first so its cofactor is the
         // native one computed by the GCD algorithm (avoiding the expensive
         // second-cofactor derivation via multiply+divide).
         let (gcd, coeff_b) = fast_gcd_coeff_a_owned(b_abs, f.a.clone());
-        let v2 = if f.b < 0i32 { -coeff_b } else { coeff_b };
+        let v2 = if b_is_neg { -coeff_b } else { coeff_b };
         (gcd, v2)
     };
 
