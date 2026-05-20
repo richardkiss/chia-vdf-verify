@@ -10,16 +10,18 @@ The existing `chiavdf` library depends on GMP (GNU Multiple Precision Arithmetic
 
 ## Performance
 
-Verification performance is acceptable for consensus validation (VDF verification is inherently fast by design — one proof per block).
+Rust is consistently ~12% slower than C++/GMP across all proof depths, measured on real mainnet proofs:
 
-| Variant | 512-bit disc, iters=100 | 1024-bit disc, depth=0 | 1024-bit disc, depth=2 | 1024-bit disc, depth=5 |
-|---------|------------------------|----------------------|----------------------|----------------------|
-| chiavdf C + GMP | ~1.1 ms* | — | — | — |
-| chia-vdf-verify (Rust) | ~0.84 ms | ~5.5 ms | ~18.8 ms | ~32.8 ms |
+| Depth | chiavdf C++ | chia-vdf-verify (Rust) | Ratio |
+|-------|-------------|------------------------|-------|
+| 0     | ~4.3 ms     | ~4.8 ms                | 1.11x |
+| 1     | ~9.5 ms     | ~10.7 ms               | 1.13x |
+| 2     | ~15.2 ms    | ~17.1 ms               | 1.12x |
+| 3     | ~20.4 ms    | ~22.9 ms               | 1.12x |
+| 4     | ~25.8 ms    | ~28.9 ms               | 1.12x |
+| 5     | ~31.2 ms    | ~34.4 ms               | 1.10x |
 
-\* C++ number is from an older measurement; the relative performance may have changed.
-
-Chia mainnet uses 1024-bit discriminants. Typical verification is under 35ms per proof.
+Benchmarked using `benches/vdf_cpp_vs_rust.py` against 100 real mainnet proofs. Chia mainnet uses 1024-bit discriminants, depth 0–2 typical. The ~12% overhead is acceptable for consensus validation (one proof per block).
 
 ## How VDF verification works
 
