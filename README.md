@@ -10,14 +10,16 @@ The existing `chiavdf` library depends on GMP (GNU Multiple Precision Arithmetic
 
 ## Performance
 
-Verification is ~2x slower than the C/GMP version, which is acceptable for consensus validation (VDF verification is inherently fast by design — one proof per block).
+Verification performance is acceptable for consensus validation (VDF verification is inherently fast by design — one proof per block).
 
-| Variant | 512-bit disc, iters=100 | 1024-bit disc, depth=0 | 1024-bit disc, depth=2 |
-|---------|------------------------|----------------------|----------------------|
-| chiavdf C + GMP | ~1.1 ms | — | — |
-| chia-vdf-verify (Rust) | ~2.3 ms | ~18 ms | ~57 ms |
+| Variant | 512-bit disc, iters=100 | 1024-bit disc, depth=0 | 1024-bit disc, depth=2 | 1024-bit disc, depth=5 |
+|---------|------------------------|----------------------|----------------------|----------------------|
+| chiavdf C + GMP | ~1.1 ms* | — | — | — |
+| chia-vdf-verify (Rust) | ~0.84 ms | ~5.5 ms | ~18.8 ms | ~32.8 ms |
 
-Chia mainnet uses 1024-bit discriminants. Typical verification is under 60ms per proof.
+\* C++ number is from an older measurement; the relative performance may have changed.
+
+Chia mainnet uses 1024-bit discriminants. Typical verification is under 35ms per proof.
 
 ## How VDF verification works
 
