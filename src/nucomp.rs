@@ -26,7 +26,7 @@ pub fn nucomp(f: &Form, g: &Form, d: &Integer, l: &Integer) -> Form {
     let (sp, v1) = if t == 0i32 {
         (f.a.clone(), Integer::ZERO)
     } else {
-        let (gcd, x, _) = fast_extended_gcd_owned(t, f.a.clone());
+        let (gcd, x) = fast_gcd_coeff_a_owned(t, f.a.clone());
         (gcd, x)
     };
 
