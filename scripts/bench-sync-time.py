@@ -95,10 +95,12 @@ def get_discriminant(challenge: bytes, size_bits: int, backend: str) -> int:
     return _disc_cache[key]
 
 
-def verify_task(task: VDFTask, backend: str) -> tuple[bool, Optional[str]]:
+def verify_task(task: VDFTask, backend: str, primes_only: bool = False) -> tuple[bool, Optional[str]]:
     try:
-        verify_fn = _cpp_verify if backend == "cpp" else _rust_verify
         disc = get_discriminant(bytes(task.info.challenge), DEFAULT_CONSTANTS.DISCRIMINANT_SIZE_BITS, backend)
+        if primes_only:
+            return True, None
+        verify_fn = _cpp_verify if backend == "cpp" else _rust_verify
         ok = verify_fn(
             str(disc),
             bytes(task.input_el),
@@ -192,6 +194,8 @@ def main() -> None:
                         help="First block height to process (default: 0)")
     parser.add_argument("--max-height", type=int, metavar="N",
                         help="Last block height to process (default: chain tip)")
+    parser.add_argument("--primes-only", action="store_true",
+                        help="Only compute discriminants (prime finding), skip proof verification")
     args = parser.parse_args()
 
     if not args.db.exists():
@@ -209,8 +213,9 @@ def main() -> None:
     nblocks = count_blocks(args.db, args.start_height, args.max_height)
     height_range = f"{args.start_height:,} – {args.max_height:,}" if args.max_height else f"{args.start_height:,} – tip"
     backend_label = "chiavdf C++" if args.backend == "cpp" else "chia-vdf-verify Rust"
+    mode_label = "primes only (no verification)" if args.primes_only else "full verification"
     print(f"Blocks in range [{height_range}]: {nblocks:,}")
-    print(f"Backend: {backend_label}   Threads: {args.threads}\n")
+    print(f"Backend: {backend_label}   Threads: {args.threads}   Mode: {mode_label}\n")
 
     ok = fail = 0
     blocks_seen = 0
@@ -250,7 +255,7 @@ def main() -> None:
 
             if len(in_flight) >= window:
                 drain_one()
-            in_flight.append((ex.submit(verify_task, task, args.backend), task))
+            in_flight.append((ex.submit(verify_task, task, args.backend, args.primes_only), task))
 
         while in_flight:
             drain_one()
@@ -270,6 +275,7 @@ def main() -> None:
     print(f"Proofs/sec:      {pps:>10.1f}")
     print(f"Single-thread ≈  {single_thread_est:>10.1f}s  (lower bound on sequential sync)")
     print(f"Backend:         {args.backend:>10}  ({backend_label})")
+    print(f"Mode:            {'primes only':>10}" if args.primes_only else f"Mode:            {'full verify':>10}")
     print(f"Threads:         {args.threads:>10}")
     print(f"{'='*60}")
 
