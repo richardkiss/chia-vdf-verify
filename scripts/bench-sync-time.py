@@ -117,6 +117,22 @@ def in_genesis_slot(challenge: bytes) -> bool:
     return bytes(challenge) == _GENESIS_CHALLENGE_BYTES
 
 
+def is_likely_legacy_format(proof: VDFProof) -> bool:
+    """
+    Heuristic for pre-chiavdf-1.0.1 n-Wesolowski proofs.
+
+    Old segments: (iters, y, proof) — y is 100 bytes for 1024-bit disc.
+    New segments: (iters, B, proof) — B is 33 bytes.
+    Per-segment delta is ~67 bytes, so legacy witnesses are noticeably larger.
+    """
+    if proof.witness_type == 0:
+        return False
+    wlen = len(bytes(proof.witness))
+    n = proof.witness_type
+    # n=2 legacy witnesses observed at ~382 bytes; modern at ~282 bytes.
+    return wlen >= n * 175
+
+
 # ---------------------------------------------------------------------------
 # Core proof verifier — mirrors validate_vdf / verify_vdf
 # ---------------------------------------------------------------------------
@@ -151,10 +167,14 @@ def verify_vdf(
 VDFTask = tuple[VDFProof, list[tuple[ClassgroupElement, VDFInfo]]]
 
 
-def verify_task(task: VDFTask, backend: str) -> bool:
-    """Try each candidate (input_el, vdf_info) until one passes."""
+def verify_task(task: VDFTask, backend: str) -> str:
+    """Try each candidate; return 'ok', 'legacy', or 'fail'."""
     proof, candidates = task
-    return any(verify_vdf(proof, info, inp, backend) for inp, info in candidates)
+    if any(verify_vdf(proof, info, inp, backend) for inp, info in candidates):
+        return "ok"
+    if is_likely_legacy_format(proof):
+        return "legacy"
+    return "fail"
 
 
 # ---------------------------------------------------------------------------
@@ -413,7 +433,7 @@ def run_benchmark(
     label = "chiavdf C++" if backend == "cpp" else "chia-vdf-verify Rust"
     print(f"Backend: {label}   workers={workers}")
 
-    total_ok = total_fail = total_blocks = 0
+    total_ok = total_legacy = total_fail = total_blocks = 0
     prev_br: Optional[BlockRecord] = None
 
     if min_height > 0:
@@ -431,27 +451,33 @@ def run_benchmark(
 
     # Cap in-flight futures so we don't queue the entire blockchain upfront.
     max_pending = workers * 16
-    pending: deque[Future[bool]] = deque()
+    pending: deque[Future[str]] = deque()
+
+    def tally(result: str) -> None:
+        nonlocal total_ok, total_legacy, total_fail
+        if result == "ok":
+            total_ok += 1
+        elif result == "legacy":
+            total_legacy += 1
+        else:
+            total_fail += 1
 
     def drain_done() -> None:
-        nonlocal total_ok, total_fail
         while pending and pending[0].done():
-            ok = pending.popleft().result()
-            total_ok += ok
-            total_fail += not ok
+            tally(pending.popleft().result())
 
     def maybe_report(force: bool = False) -> None:
         nonlocal last_reported
-        n_verified = total_ok + total_fail
-        if force or n_verified - last_reported >= 500:
+        n_done = total_ok + total_legacy + total_fail
+        if force or n_done - last_reported >= 500:
             elapsed = time.perf_counter() - t0
             print(
                 f"  h={last_h:,}  blk={total_blocks:,}  queued={len(pending):,}  "
-                f"ok={total_ok:,}  fail={total_fail:,}  "
-                f"{total_blocks/elapsed:.1f} blk/s  {n_verified/elapsed:.1f} proof/s",
+                f"ok={total_ok:,}  legacy={total_legacy:,}  fail={total_fail:,}  "
+                f"{total_blocks/elapsed:.1f} blk/s  {n_done/elapsed:.1f} proof/s",
                 end="\r",
             )
-            last_reported = n_verified
+            last_reported = n_done
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for row in conn.execute(q, params):
@@ -464,9 +490,7 @@ def run_benchmark(
             for task in tasks:
                 # Back-pressure: if queue is full, wait for the oldest future
                 while len(pending) >= max_pending:
-                    ok = pending.popleft().result()
-                    total_ok += ok
-                    total_fail += not ok
+                    tally(pending.popleft().result())
                     drain_done()
                     maybe_report()
                 pending.append(pool.submit(verify_task, task, backend))
@@ -478,20 +502,20 @@ def run_benchmark(
 
         # Drain remaining with live updates
         while pending:
-            ok = pending.popleft().result()
-            total_ok += ok
-            total_fail += not ok
+            tally(pending.popleft().result())
             drain_done()
             maybe_report()
 
     elapsed = time.perf_counter() - t0
-    total_proofs = total_ok + total_fail
+    total_proofs = total_ok + total_legacy + total_fail
     print()
     print("=" * 60)
     print(f"Heights:        {min_height:>10,} – {last_h:,}")
     print(f"Blocks:         {total_blocks:>10,}")
     print(f"Workers:        {workers:>10,}")
-    print(f"Proofs:         {total_proofs:>10,}  ({total_ok:,} ok, {total_fail:,} failed)")
+    print(f"Proofs:         {total_proofs:>10,}  ({total_ok:,} ok, {total_legacy:,} legacy, {total_fail:,} failed)")
+    if total_legacy:
+        print(f"  Legacy:       pre-chiavdf-1.0.1 n-Wesolowski format (iters,y,proof); unverifiable")
     print(f"Wall time:      {elapsed:>10.2f}s")
     if elapsed > 0:
         print(f"Blocks/sec:     {total_blocks/elapsed:>10.1f}")
