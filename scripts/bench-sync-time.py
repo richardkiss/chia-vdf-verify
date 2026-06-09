@@ -1,68 +1,43 @@
 #!/usr/bin/env python3
 # /// script
-# requires-python = ">=3.11"
+# requires-python = ">=3.10"
 # dependencies = [
-#   "chia-blockchain",
+#   "chia-blockchain>=2.0",
+#   "chiavdf",
+#   "chia-vdf-verify",
 #   "zstd",
-#   "tqdm",
 # ]
 # ///
 """
-Benchmark VDF proof verification against a synced Chia mainnet blockchain DB.
+Sequential VDF benchmark — verifies every proof exactly as the chia node does.
 
-Measures the lower bound on sync time (pure proof-checking cost) and lets you
-compare the C++ chiavdf backend against the pure-Rust chia-vdf-verify backend.
+Processes blocks in order, maintains chain state (prev BlockRecord), and
+correctly computes the input ClassgroupElement and iteration count for each
+EOS / SP / IP proof.  Compares C++ (chiavdf) vs Rust (chia-vdf-verify).
 
 Usage:
-    # C++ backend (default)
-    uv run scripts/bench-sync-time.py --threads 8
-
-    # Rust backend (from local repo)
-    uv run --with . scripts/bench-sync-time.py --backend rust --threads 8
-
-    # Rust backend (from any git URL — note the git+https:// syntax)
-    uv run --with "chia-vdf-verify @ git+https://github.com/your-fork/chia-vdf-verify" \
-        scripts/bench-sync-time.py --backend rust --threads 8
+    uv run --with . scripts/bench-sync-time.py --backend rust
+    uv run --with . scripts/bench-sync-time.py --backend cpp
+    uv run --with . scripts/bench-sync-time.py --backend both
 """
+from __future__ import annotations
 
 import argparse
-import collections
 import sqlite3
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, Future
-from dataclasses import dataclass
+import zstd
+from functools import lru_cache
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Optional
 
-try:
-    from chia_rs import FullBlock, VDFInfo, VDFProof, ClassgroupElement
-    from chia_rs.sized_bytes import bytes32, bytes100
-except ImportError as e:
-    print(f"Error: chia-rs not found: {e}", file=sys.stderr)
-    sys.exit(1)
+from chia_rs import BlockRecord, ClassgroupElement, EndOfSubSlotBundle, FullBlock, VDFInfo, VDFProof
+from chia_rs.sized_bytes import bytes32
+from chia_rs.sized_ints import uint64
 
-# Try to get DISCRIMINANT_SIZE_BITS from chia-blockchain; fall back to mainnet value.
-try:
-    from chia.consensus.default_constants import DEFAULT_CONSTANTS
-    _DISC_BITS: int = DEFAULT_CONSTANTS.DISCRIMINANT_SIZE_BITS
-except Exception:
-    _DISC_BITS = 1024  # mainnet
-
-try:
-    import zstd
-except ImportError:
-    print("Error: zstd not found. Install with: pip install zstd", file=sys.stderr)
-    sys.exit(1)
-
-try:
-    from tqdm import tqdm
-    HAVE_TQDM = True
-except ImportError:
-    HAVE_TQDM = False
-
-# --- backends ---
-
+# ---------------------------------------------------------------------------
+# Backend imports
+# ---------------------------------------------------------------------------
 try:
     from chiavdf import create_discriminant as _cpp_disc, verify_n_wesolowski as _cpp_verify
     HAVE_CPP = True
@@ -75,223 +50,446 @@ try:
 except ImportError:
     HAVE_RUST = False
 
+# ---------------------------------------------------------------------------
+# Mainnet constants
+# ---------------------------------------------------------------------------
+DISC_BITS: int = 1024
+NUM_SPS_SUB_SLOT: int = 64
+NUM_SP_INTERVALS_EXTRA: int = 3
+GENESIS_CHALLENGE: bytes32 = bytes32.fromhex(
+    "ccd5bb71183532bff220ba46c268991a3ff07eb358e8255a65c30a2dce0e5fbb"
+)
+_GENESIS_CHALLENGE_BYTES = bytes.fromhex(
+    "ccd5bb71183532bff220ba46c268991a3ff07eb358e8255a65c30a2dce0e5fbb"
+)
+DEFAULT_DB = Path.home() / ".chia/mainnet/db/blockchain_v2_mainnet.sqlite"
 
-@dataclass
-class VDFTask:
-    proof: VDFProof
-    info: VDFInfo
-    input_el: bytes100
-    height: int
-    name: str
-
-
-def _disc_cache_key(challenge: bytes, size_bits: int) -> tuple:
-    return (bytes(challenge), size_bits)
-
-
-_disc_cache: dict = {}
-
-
-def get_discriminant(challenge: bytes, size_bits: int, backend: str) -> int:
-    key = _disc_cache_key(challenge, size_bits)
-    if key not in _disc_cache:
-        fn = _cpp_disc if backend == "cpp" else _rust_disc
-        _disc_cache[key] = int(fn(challenge, size_bits), 16)
-    return _disc_cache[key]
+# ---------------------------------------------------------------------------
+# Discriminant cache — backend-agnostic integer
+# ---------------------------------------------------------------------------
+@lru_cache(maxsize=2048)
+def get_discriminant(challenge: bytes) -> int:
+    fn = _cpp_disc if HAVE_CPP else _rust_disc
+    return int(fn(challenge, DISC_BITS), 16)
 
 
-def verify_task(task: VDFTask, backend: str, primes_only: bool = False) -> tuple[bool, Optional[str]]:
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+_DEFAULT_EL: Optional[ClassgroupElement] = None
+
+def default_el() -> ClassgroupElement:
+    global _DEFAULT_EL
+    if _DEFAULT_EL is None:
+        _DEFAULT_EL = ClassgroupElement.get_default_element()
+    return _DEFAULT_EL
+
+
+def calc_sp_iters(br: BlockRecord) -> int:
+    return int(br.signage_point_index) * int(br.sub_slot_iters) // NUM_SPS_SUB_SLOT
+
+
+def calc_ip_iters(br: BlockRecord) -> int:
+    return calc_sp_iters(br) + int(br.required_iters)
+
+
+def is_overflow(br: BlockRecord) -> bool:
+    return int(br.signage_point_index) >= NUM_SPS_SUB_SLOT - NUM_SP_INTERVALS_EXTRA
+
+
+def sp_total_iters(br: BlockRecord) -> int:
+    """Total VDF iters at the signage point of this block."""
+    # ip_iters = sp_iters + required_iters  =>  sp_total = total - required
+    return int(br.total_iters) - int(br.required_iters)
+
+
+def in_genesis_slot(challenge: bytes) -> bool:
+    """
+    The genesis slot uses cumulative proofs (default_el + full ip_iters) rather
+    than delta proofs from the previous block's output.  Detect by challenge.
+    """
+    return bytes(challenge) == _GENESIS_CHALLENGE_BYTES
+
+
+# ---------------------------------------------------------------------------
+# Core proof verifier — mirrors validate_vdf / verify_vdf
+# ---------------------------------------------------------------------------
+def verify_vdf(
+    proof: VDFProof,
+    info: VDFInfo,
+    input_el: ClassgroupElement,
+    backend: str,
+) -> bool:
+    """
+    Verify one VDF proof.  For normalized_to_identity proofs the input is
+    always the default element regardless of what the caller passes.
+    """
     try:
-        disc = get_discriminant(bytes(task.info.challenge), _DISC_BITS, backend)
-        if primes_only:
-            return True, None
-        verify_fn = _cpp_verify if backend == "cpp" else _rust_verify
-        ok = verify_fn(
+        actual_input = default_el() if proof.normalized_to_identity else input_el
+        disc = get_discriminant(bytes(info.challenge))
+        output_blob = bytes(info.output.data) + bytes(proof.witness)
+        fn = _cpp_verify if backend == "cpp" else _rust_verify
+        return bool(fn(
             str(disc),
-            bytes(task.input_el),
-            bytes(task.proof.witness),
-            task.info.number_of_iterations,
-            _DISC_BITS,
-            task.proof.witness_type,
-        )
-        return bool(ok), None
-    except Exception as e:
-        return False, str(e)
+            bytes(actual_input.data),
+            output_blob,
+            info.number_of_iterations,
+            DISC_BITS,
+            proof.witness_type,
+        ))
+    except Exception:
+        return False
 
 
-def extract_tasks(block: FullBlock) -> list[VDFTask]:
-    tasks = []
-    h = int(block.height)
-    el = ClassgroupElement.get_default_element().data
+# ---------------------------------------------------------------------------
+# BlockRecord in-memory cache
+# ---------------------------------------------------------------------------
+class BlockRecordDB:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        self._cache: dict[bytes, BlockRecord] = {}
 
-    for i, ss in enumerate(block.finished_sub_slots):
+    def add(self, br: BlockRecord) -> None:
+        self._cache[bytes(br.header_hash)] = br
+
+    def block_record(self, header_hash: bytes32) -> BlockRecord:
+        key = bytes(header_hash)
+        if key not in self._cache:
+            row = self._conn.execute(
+                "SELECT block_record FROM full_blocks WHERE header_hash=?", (key,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"BlockRecord not found: {header_hash.hex()}")
+            br = BlockRecord.from_bytes(row[0])
+            self._cache[key] = br
+        return self._cache[key]
+
+
+# ---------------------------------------------------------------------------
+# EOS proof verification
+# ---------------------------------------------------------------------------
+def verify_eos_proofs(
+    block: FullBlock,
+    block_br: BlockRecord,
+    prev_br: Optional[BlockRecord],
+    backend: str,
+) -> tuple[int, int]:
+    ok_count = fail_count = 0
+    genesis = prev_br is None
+
+    for n, ss in enumerate(block.finished_sub_slots):
         p = ss.proofs
         cc = ss.challenge_chain
         rc = ss.reward_chain
+
+        # CC EOS -------------------------------------------------------
+        # Mirrors block_header_validation.py logic for cc_start_element
+        # and partial_cc_vdf_info (which uses eos_vdf_iters, not full slot iters).
+        if genesis or n > 0:
+            cc_start = default_el()
+            eos_iters = int(cc.challenge_chain_end_of_slot_vdf.number_of_iterations)
+        else:
+            # n == 0, not genesis: EOS VDF starts from prev block's IP output
+            assert prev_br is not None
+            cc_start = prev_br.challenge_vdf_output
+            eos_iters = int(prev_br.sub_slot_iters) - calc_ip_iters(prev_br)
+
+        cc_eos_info = cc.challenge_chain_end_of_slot_vdf
+        # partial_cc_vdf_info has eos_iters (not full slot iters)
+        partial_info = cc_eos_info.replace(number_of_iterations=uint64(eos_iters))
+
         if p.challenge_chain_slot_proof is not None:
-            tasks.append(VDFTask(p.challenge_chain_slot_proof, cc.challenge_chain_end_of_slot_vdf, el, h, f"cc_slot_{i}"))
+            proof = p.challenge_chain_slot_proof
+            info = cc_eos_info if proof.normalized_to_identity else partial_info
+            inp = default_el() if proof.normalized_to_identity else cc_start
+            ok = verify_vdf(proof, info, inp, backend)
+            ok_count += ok; fail_count += not ok
+
+        # RC EOS: always starts from default element
         if p.reward_chain_slot_proof is not None:
-            tasks.append(VDFTask(p.reward_chain_slot_proof, rc.end_of_slot_vdf, el, h, f"rc_slot_{i}"))
-        if ss.infused_challenge_chain is not None and p.infused_challenge_chain_slot_proof is not None:
-            tasks.append(VDFTask(p.infused_challenge_chain_slot_proof,
-                                 ss.infused_challenge_chain.infused_challenge_chain_end_of_slot_vdf, el, h, f"icc_slot_{i}"))
+            ok = verify_vdf(p.reward_chain_slot_proof, rc.end_of_slot_vdf, default_el(), backend)
+            ok_count += ok; fail_count += not ok
 
+        # ICC EOS: always starts from default element
+        icc = ss.infused_challenge_chain
+        if icc is not None and p.infused_challenge_chain_slot_proof is not None:
+            ok = verify_vdf(
+                p.infused_challenge_chain_slot_proof,
+                icc.infused_challenge_chain_end_of_slot_vdf,
+                default_el(),
+                backend,
+            )
+            ok_count += ok; fail_count += not ok
+
+    return ok_count, fail_count
+
+
+# ---------------------------------------------------------------------------
+# SP proof verification
+# ---------------------------------------------------------------------------
+def get_cc_sp_candidates(
+    block_br: BlockRecord,
+    fss: list,
+    prev_br: Optional[BlockRecord],
+    brdb: BlockRecordDB,
+    sp_info: VDFInfo,
+) -> list[tuple[ClassgroupElement, VDFInfo]]:
+    """
+    Returns candidate (input_el, vdf_info) pairs for CC SP proof verification.
+    Mirrors get_signage_point_vdf_info, returning primary + fallback candidates.
+    """
+    new_sub_slot = len(fss) > 0
+    overflow = is_overflow(block_br)
+    genesis = prev_br is None
+    sp_tt = sp_total_iters(block_br)
+    sp_in_slot = calc_sp_iters(block_br)
+    stored = sp_info  # stored sp_info (iters = sp_in_slot for new-slot cases)
+
+    if new_sub_slot and not overflow:
+        return [(default_el(), stored)]   # Case 1
+    if new_sub_slot and overflow and len(fss) > 1:
+        return [(default_el(), stored)]   # Case 2
+    if genesis or in_genesis_slot(sp_info.challenge):
+        return [(default_el(), stored)]   # Case 3 / genesis slot
+
+    assert prev_br is not None
+
+    def from_curr(curr: BlockRecord) -> list[tuple[ClassgroupElement, VDFInfo]]:
+        delta = sp_tt - int(curr.total_iters)
+        return [
+            (curr.challenge_vdf_output, stored.replace(number_of_iterations=uint64(delta))),
+            (default_el(), stored),
+        ]
+
+    if new_sub_slot and overflow and len(fss) == 1:
+        # Case 4
+        curr = prev_br
+        while not curr.first_in_sub_slot and int(curr.total_iters) > sp_tt:
+            curr = brdb.block_record(curr.prev_hash)
+        if int(curr.total_iters) < sp_tt:
+            return from_curr(curr)
+        return [(default_el(), stored)]
+
+    if not new_sub_slot and overflow:
+        # Case 5
+        curr = prev_br
+        found_slots = len(curr.finished_challenge_slot_hashes or []) if curr.first_in_sub_slot else 0
+        sp_pre_sb: Optional[BlockRecord] = None
+        while found_slots < 2 and int(curr.height) > 0:
+            if sp_pre_sb is None and int(curr.total_iters) < sp_tt:
+                sp_pre_sb = curr
+            curr = brdb.block_record(curr.prev_hash)
+            if curr.first_in_sub_slot:
+                found_slots += len(curr.finished_challenge_slot_hashes or [])
+        if sp_pre_sb is None and int(curr.total_iters) < sp_tt:
+            sp_pre_sb = curr
+        if sp_pre_sb is not None:
+            return from_curr(sp_pre_sb)
+        return [(default_el(), stored)]
+
+    # Case 6: same sub-slot, no overflow
+    curr = prev_br
+    while not curr.first_in_sub_slot and int(curr.total_iters) > sp_tt:
+        curr = brdb.block_record(curr.prev_hash)
+    if int(curr.total_iters) < sp_tt:
+        return from_curr(curr)
+    return [(default_el(), stored)]
+
+
+def verify_sp_proof(
+    block: FullBlock,
+    block_br: BlockRecord,
+    prev_br: Optional[BlockRecord],
+    brdb: BlockRecordDB,
+    backend: str,
+) -> tuple[int, int]:
+    ok_count = fail_count = 0
     rc = block.reward_chain_block
+    fss = list(block.finished_sub_slots)
+
+    if calc_sp_iters(block_br) == 0:
+        return 0, 0  # first SP in sub-slot — no SP proof
+
+    # CC SP
     if rc.challenge_chain_sp_vdf is not None and block.challenge_chain_sp_proof is not None:
-        tasks.append(VDFTask(block.challenge_chain_sp_proof, rc.challenge_chain_sp_vdf, el, h, "cc_sp"))
-    if block.challenge_chain_ip_proof is not None:
-        tasks.append(VDFTask(block.challenge_chain_ip_proof, rc.challenge_chain_ip_vdf, el, h, "cc_ip"))
+        proof = block.challenge_chain_sp_proof
+        candidates = get_cc_sp_candidates(block_br, fss, prev_br, brdb, rc.challenge_chain_sp_vdf)
+        ok = any(verify_vdf(proof, info, inp, backend) for inp, info in candidates)
+        ok_count += ok; fail_count += not ok
+
+    # RC SP: always starts from default element, use stored iterations
     if rc.reward_chain_sp_vdf is not None and block.reward_chain_sp_proof is not None:
-        tasks.append(VDFTask(block.reward_chain_sp_proof, rc.reward_chain_sp_vdf, el, h, "rc_sp"))
+        ok = verify_vdf(block.reward_chain_sp_proof, rc.reward_chain_sp_vdf, default_el(), backend)
+        ok_count += ok; fail_count += not ok
+
+    return ok_count, fail_count
+
+
+# ---------------------------------------------------------------------------
+# IP proof verification
+# ---------------------------------------------------------------------------
+def verify_ip_proof(
+    block: FullBlock,
+    block_br: BlockRecord,
+    prev_br: Optional[BlockRecord],
+    backend: str,
+) -> tuple[int, int]:
+    ok_count = fail_count = 0
+    rc = block.reward_chain_block
+    genesis = prev_br is None
+    new_sub_slot = len(block.finished_sub_slots) > 0
+
+    # CC IP ---------------------------------------------------------------
+    # The proof covers either:
+    #   (a) the full range from slot-start (default_el, stored ip_iters), or
+    #   (b) just the delta from the previous block's IP output.
+    # Genesis slot uses (a); later slots use (b).  We try both and take any pass.
+    if block.challenge_chain_ip_proof is not None:
+        proof = block.challenge_chain_ip_proof
+        stored_info = rc.challenge_chain_ip_vdf
+        # Candidates: list of (input_el, vdf_info)
+        if genesis or new_sub_slot or in_genesis_slot(stored_info.challenge):
+            candidates = [(default_el(), stored_info)]
+        else:
+            assert prev_br is not None
+            ip_delta = int(block_br.total_iters) - int(prev_br.total_iters)
+            candidates = [
+                (prev_br.challenge_vdf_output,
+                 stored_info.replace(number_of_iterations=uint64(ip_delta))),
+                (default_el(), stored_info),          # fallback
+            ]
+        ok = any(verify_vdf(proof, info, inp, backend) for inp, info in candidates)
+        ok_count += ok; fail_count += not ok
+
+    # RC IP: always default element, stored iterations
     if block.reward_chain_ip_proof is not None:
-        tasks.append(VDFTask(block.reward_chain_ip_proof, rc.reward_chain_ip_vdf, el, h, "rc_ip"))
+        ok = verify_vdf(block.reward_chain_ip_proof, rc.reward_chain_ip_vdf, default_el(), backend)
+        ok_count += ok; fail_count += not ok
+
+    # ICC IP — input is prev_b.infused_challenge_vdf_output + delta_iters
+    # (same pattern as CC IP but for the infused challenge chain).
+    # When there is no previous ICC output the chain is starting fresh (default_el).
     if rc.infused_challenge_chain_ip_vdf is not None and block.infused_challenge_chain_ip_proof is not None:
-        tasks.append(VDFTask(block.infused_challenge_chain_ip_proof, rc.infused_challenge_chain_ip_vdf, el, h, "icc_ip"))
+        proof = block.infused_challenge_chain_ip_proof
+        icc_info = rc.infused_challenge_chain_ip_vdf
+        prev_icc_out = None if (genesis or prev_br is None) else prev_br.infused_challenge_vdf_output
+        if prev_icc_out is None:
+            candidates = [(default_el(), icc_info)]
+        else:
+            icc_delta = int(block_br.total_iters) - int(prev_br.total_iters)
+            candidates = [
+                (prev_icc_out, icc_info.replace(number_of_iterations=uint64(icc_delta))),
+                (default_el(), icc_info),
+            ]
+        ok = any(verify_vdf(proof, info, inp, backend) for inp, info in candidates)
+        ok_count += ok; fail_count += not ok
 
-    return tasks
+    return ok_count, fail_count
 
 
-def count_blocks(db: Path, min_height: int, max_height: Optional[int]) -> int:
+# ---------------------------------------------------------------------------
+# Full block
+# ---------------------------------------------------------------------------
+def verify_block(
+    block: FullBlock,
+    block_br: BlockRecord,
+    prev_br: Optional[BlockRecord],
+    brdb: BlockRecordDB,
+    backend: str,
+) -> tuple[int, int]:
+    eos_ok, eos_fail = verify_eos_proofs(block, block_br, prev_br, backend)
+    sp_ok,  sp_fail  = verify_sp_proof(block, block_br, prev_br, brdb, backend)
+    ip_ok,  ip_fail  = verify_ip_proof(block, block_br, prev_br, backend)
+    return eos_ok + sp_ok + ip_ok, eos_fail + sp_fail + ip_fail
+
+
+# ---------------------------------------------------------------------------
+# Main loop
+# ---------------------------------------------------------------------------
+def run_benchmark(db: Path, backend: str, min_height: int, max_height: Optional[int]) -> None:
+    if backend == "cpp" and not HAVE_CPP:
+        print("Error: chiavdf not available", file=sys.stderr); sys.exit(1)
+    if backend == "rust" and not HAVE_RUST:
+        print("Error: chia-vdf-verify not available", file=sys.stderr); sys.exit(1)
+
     conn = sqlite3.connect(str(db))
-    q = "SELECT COUNT(*) FROM full_blocks WHERE in_main_chain = 1 AND height >= ?"
-    params: list = [min_height]
-    if max_height is not None:
-        q += " AND height <= ?"
-        params.append(max_height)
-    (n,) = conn.execute(q, params).fetchone()
-    conn.close()
-    return n
+    brdb = BlockRecordDB(conn)
 
-
-def iter_raw_blocks(db: Path, min_height: int, max_height: Optional[int]):
-    """Stream (height, raw_bytes) from SQLite — main thread only does I/O."""
-    conn = sqlite3.connect(str(db))
-    conn.row_factory = sqlite3.Row
-    q = "SELECT height, block FROM full_blocks WHERE in_main_chain = 1 AND height >= ? ORDER BY height"
+    q = ("SELECT height, block, block_record FROM full_blocks "
+         "WHERE in_main_chain=1 AND height >= ? ORDER BY height")
     params: list = [min_height]
     if max_height is not None:
         q = q.replace("ORDER BY", "AND height <= ? ORDER BY")
         params.insert(1, max_height)
-    for row in conn.execute(q, params):
-        yield int(row["height"]), bytes(row["block"])
-    conn.close()
 
+    label = "chiavdf C++" if backend == "cpp" else "chia-vdf-verify Rust"
+    print(f"Backend: {label}   (sequential, correct chain state)")
 
-def process_block(raw: bytes, height: int, backend: str, primes_only: bool) -> tuple[int, int, list]:
-    """Decompress + parse + extract + verify a single block. Runs in thread pool."""
-    try:
-        blob = zstd.decompress(raw)
-        block = FullBlock.from_bytes(blob)
-    except Exception as e:
-        return 0, 0, [(height, f"parse error: {e}")]
-    tasks = extract_tasks(block)
-    ok = fail = 0
-    errors = []
-    for task in tasks:
-        success, err = verify_task(task, backend, primes_only)
-        if success:
-            ok += 1
-        else:
-            fail += 1
-            if err:
-                errors.append((task.height, err))
-    return ok, fail, errors
+    total_ok = total_fail = total_blocks = 0
+    prev_br: Optional[BlockRecord] = None
 
+    if min_height > 0:
+        row = conn.execute(
+            "SELECT block_record FROM full_blocks WHERE in_main_chain=1 AND height=?",
+            (min_height - 1,),
+        ).fetchone()
+        if row:
+            prev_br = BlockRecord.from_bytes(row[0])
+            brdb.add(prev_br)
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--db", type=Path,
-                        default=Path.home() / ".chia/mainnet/db/blockchain_v2_mainnet.sqlite")
-    parser.add_argument("--backend", choices=["cpp", "rust"], default="cpp",
-                        help="cpp=chiavdf (default), rust=chia-vdf-verify")
-    parser.add_argument("--threads", type=int, default=4)
-    parser.add_argument("--start-height", type=int, default=0, metavar="N",
-                        help="First block height to process (default: 0)")
-    parser.add_argument("--max-height", type=int, metavar="N",
-                        help="Last block height to process (default: chain tip)")
-    parser.add_argument("--primes-only", action="store_true",
-                        help="Only compute discriminants (prime finding), skip proof verification")
-    args = parser.parse_args()
-
-    if not args.db.exists():
-        sys.exit(f"Database not found: {args.db}")
-    if args.backend == "cpp" and not HAVE_CPP:
-        sys.exit("C++ backend not available: pip install chiavdf")
-    if args.backend == "rust" and not HAVE_RUST:
-        sys.exit(
-            "Rust backend not available. Run with one of:\n"
-            "  uv run --with . scripts/bench-sync-time.py --backend rust\n"
-            '  uv run --with "chia-vdf-verify @ git+https://github.com/OWNER/chia-vdf-verify"'
-            " scripts/bench-sync-time.py --backend rust"
-        )
-
-    nblocks = count_blocks(args.db, args.start_height, args.max_height)
-    height_range = f"{args.start_height:,} – {args.max_height:,}" if args.max_height else f"{args.start_height:,} – tip"
-    backend_label = "chiavdf C++" if args.backend == "cpp" else "chia-vdf-verify Rust"
-    mode_label = "primes only (no verification)" if args.primes_only else "full verification"
-    print(f"Blocks in range [{height_range}]: {nblocks:,}")
-    print(f"Backend: {backend_label}   Threads: {args.threads}   Mode: {mode_label}\n")
-
-    ok = fail = 0
-    last_height = args.start_height
-    errors: list[tuple[int, str]] = []
     t0 = time.perf_counter()
+    last_h = min_height
 
-    # Main thread feeds raw bytes; thread pool does decomp+parse+verify.
-    # Window: at most threads*4 blocks in flight so memory stays bounded.
-    window = args.threads * 4
-    in_flight: collections.deque[tuple[Future, int]] = collections.deque()
+    for row in conn.execute(q, params):
+        last_h = int(row[0])
+        block    = FullBlock.from_bytes(zstd.decompress(row[1]))
+        block_br = BlockRecord.from_bytes(row[2])
+        brdb.add(block_br)
 
-    progress = tqdm(total=nblocks, desc="blocks", unit="block") if HAVE_TQDM else None
-    have_progress = progress is not None
+        ok, fail = verify_block(block, block_br, prev_br, brdb, backend)
+        total_ok   += ok
+        total_fail += fail
+        total_blocks += 1
+        prev_br = block_br
 
-    def drain_one() -> None:
-        nonlocal ok, fail
-        fut, height = in_flight.popleft()
-        b_ok, b_fail, b_errors = fut.result()
-        ok += b_ok
-        fail += b_fail
-        for h, err in b_errors[:5 - len(errors)]:
-            print(f"\n  error at height {h}: {err}", file=sys.stderr)
-        errors.extend(b_errors)
-        if have_progress:
-            progress.update(1)
-            progress.set_postfix(height=f"{height:,}", proofs=ok + fail)
-
-    with ThreadPoolExecutor(max_workers=args.threads) as ex:
-        for height, raw in iter_raw_blocks(args.db, args.start_height, args.max_height):
-            last_height = height
-            if len(in_flight) >= window:
-                drain_one()
-            in_flight.append((
-                ex.submit(process_block, raw, height, args.backend, args.primes_only),
-                height,
-            ))
-
-        while in_flight:
-            drain_one()
-
-    if have_progress:
-        progress.close()
+        if total_blocks % 500 == 0:
+            elapsed = time.perf_counter() - t0
+            print(
+                f"  h={last_h:,}  blocks={total_blocks:,}  "
+                f"ok={total_ok:,}  fail={total_fail:,}  "
+                f"{total_blocks/elapsed:.1f} blk/s",
+                end="\r",
+            )
 
     elapsed = time.perf_counter() - t0
-    total = ok + fail
-    pps = total / elapsed if elapsed else 0
-    single_thread_est = elapsed * args.threads
+    total_proofs = total_ok + total_fail
+    print()
+    print("=" * 60)
+    print(f"Heights:        {min_height:>10,} – {last_h:,}")
+    print(f"Blocks:         {total_blocks:>10,}")
+    print(f"Proofs:         {total_proofs:>10,}  ({total_ok:,} ok, {total_fail:,} failed)")
+    print(f"Wall time:      {elapsed:>10.2f}s")
+    if elapsed > 0:
+        print(f"Blocks/sec:     {total_blocks/elapsed:>10.1f}")
+        print(f"Proofs/sec:     {total_proofs/elapsed:>10.1f}")
+    print(f"Backend:        {label}")
+    print("=" * 60)
 
-    print(f"\n{'='*60}")
-    print(f"Heights:         {args.start_height:>10,} – {last_height:,}")
-    print(f"Proofs checked:  {total:>10,}  ({ok:,} ok, {fail:,} failed)")
-    print(f"Wall time:       {elapsed:>10.2f}s")
-    print(f"Proofs/sec:      {pps:>10.1f}")
-    print(f"Single-thread ≈  {single_thread_est:>10.1f}s  (lower bound on sequential sync)")
-    print(f"Backend:         {args.backend:>10}  ({backend_label})")
-    print(f"Mode:            {'primes only':>10}" if args.primes_only else f"Mode:            {'full verify':>10}")
-    print(f"Threads:         {args.threads:>10}")
-    print(f"{'='*60}")
 
-    if len(errors) > 5:
-        print(f"({len(errors) - 5} more errors suppressed)", file=sys.stderr)
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+def main() -> None:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--backend", choices=["cpp", "rust", "both"], default="rust")
+    p.add_argument("--db",         type=Path,  default=DEFAULT_DB)
+    p.add_argument("--min-height", type=int,   default=0)
+    p.add_argument("--max-height", type=int,   default=None)
+    args = p.parse_args()
+
+    backends = ["cpp", "rust"] if args.backend == "both" else [args.backend]
+    for b in backends:
+        run_benchmark(args.db, b, args.min_height, args.max_height)
 
 
 if __name__ == "__main__":
