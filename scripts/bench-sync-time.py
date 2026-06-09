@@ -36,13 +36,18 @@ from pathlib import Path
 from typing import Iterator, Optional
 
 try:
-    from chia_rs import FullBlock, VDFInfo, VDFProof, ConsensusConstants
+    from chia_rs import FullBlock, VDFInfo, VDFProof, ClassgroupElement
     from chia_rs.sized_bytes import bytes32, bytes100
-    from chia.consensus.default_constants import DEFAULT_CONSTANTS
-    from chia.types.blockchain_format.classgroup import ClassgroupElement
 except ImportError as e:
-    print(f"Error: chia-blockchain not found: {e}", file=sys.stderr)
+    print(f"Error: chia-rs not found: {e}", file=sys.stderr)
     sys.exit(1)
+
+# Try to get DISCRIMINANT_SIZE_BITS from chia-blockchain; fall back to mainnet value.
+try:
+    from chia.consensus.default_constants import DEFAULT_CONSTANTS
+    _DISC_BITS: int = DEFAULT_CONSTANTS.DISCRIMINANT_SIZE_BITS
+except Exception:
+    _DISC_BITS = 1024  # mainnet
 
 try:
     import zstd
@@ -97,7 +102,7 @@ def get_discriminant(challenge: bytes, size_bits: int, backend: str) -> int:
 
 def verify_task(task: VDFTask, backend: str, primes_only: bool = False) -> tuple[bool, Optional[str]]:
     try:
-        disc = get_discriminant(bytes(task.info.challenge), DEFAULT_CONSTANTS.DISCRIMINANT_SIZE_BITS, backend)
+        disc = get_discriminant(bytes(task.info.challenge), _DISC_BITS, backend)
         if primes_only:
             return True, None
         verify_fn = _cpp_verify if backend == "cpp" else _rust_verify
@@ -106,7 +111,7 @@ def verify_task(task: VDFTask, backend: str, primes_only: bool = False) -> tuple
             bytes(task.input_el),
             bytes(task.proof.witness),
             task.info.number_of_iterations,
-            DEFAULT_CONSTANTS.DISCRIMINANT_SIZE_BITS,
+            _DISC_BITS,
             task.proof.witness_type,
         )
         return bool(ok), None
