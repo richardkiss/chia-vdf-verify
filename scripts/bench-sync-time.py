@@ -4,10 +4,12 @@
 # dependencies = [
 #   "chia-blockchain>=2.0",
 #   "chiavdf",
-#   "chia-vdf-verify",
 #   "zstd",
 # ]
 # ///
+# chia-vdf-verify is intentionally omitted — it's not on PyPI.
+# Inject it via: --with "chia-vdf-verify @ git+https://github.com/richardkiss/chia-vdf-verify"
+# or locally:    --with .
 """
 Pipelined VDF benchmark — verifies every proof exactly as the chia node does.
 
