@@ -425,8 +425,10 @@ def run_benchmark(
 
     t0 = time.perf_counter()
     last_h = min_height
+    last_reported = 0
 
-    # pending: deque of (Future, 1) — each future returns bool
+    # Cap in-flight futures so we don't queue the entire blockchain upfront.
+    max_pending = workers * 16
     pending: deque[Future[bool]] = deque()
 
     def drain_done() -> None:
@@ -436,6 +438,19 @@ def run_benchmark(
             total_ok += ok
             total_fail += not ok
 
+    def maybe_report(force: bool = False) -> None:
+        nonlocal last_reported
+        n_verified = total_ok + total_fail
+        if force or n_verified - last_reported >= 500:
+            elapsed = time.perf_counter() - t0
+            print(
+                f"  h={last_h:,}  blk={total_blocks:,}  queued={len(pending):,}  "
+                f"ok={total_ok:,}  fail={total_fail:,}  "
+                f"{total_blocks/elapsed:.1f} blk/s  {n_verified/elapsed:.1f} proof/s",
+                end="\r",
+            )
+            last_reported = n_verified
+
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for row in conn.execute(q, params):
             last_h = int(row[0])
@@ -443,33 +458,29 @@ def run_benchmark(
             block_br = BlockRecord.from_bytes(row[2])
             brdb.add(block_br)
 
-            # Sequential: gather tasks with correct chain state
             tasks = gather_block_tasks(block, block_br, prev_br, brdb)
-
-            # Parallel: submit each task to the thread pool
             for task in tasks:
+                # Back-pressure: if queue is full, wait for the oldest future
+                while len(pending) >= max_pending:
+                    ok = pending.popleft().result()
+                    total_ok += ok
+                    total_fail += not ok
+                    drain_done()
+                    maybe_report()
                 pending.append(pool.submit(verify_task, task, backend))
 
             prev_br = block_br
             total_blocks += 1
-
             drain_done()
+            maybe_report()
 
-            if total_blocks % 500 == 0:
-                elapsed = time.perf_counter() - t0
-                n_done = total_ok + total_fail
-                print(
-                    f"  h={last_h:,}  blocks={total_blocks:,}  "
-                    f"ok={total_ok:,}  fail={total_fail:,}  "
-                    f"{total_blocks/elapsed:.1f} blk/s  {n_done/elapsed:.1f} proof/s",
-                    end="\r",
-                )
-
-        # Drain remaining futures
-        for f in pending:
-            ok = f.result()
+        # Drain remaining with live updates
+        while pending:
+            ok = pending.popleft().result()
             total_ok += ok
             total_fail += not ok
+            drain_done()
+            maybe_report()
 
     elapsed = time.perf_counter() - t0
     total_proofs = total_ok + total_fail
