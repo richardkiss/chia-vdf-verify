@@ -158,11 +158,8 @@ def count_blocks(db: Path, min_height: int, max_height: Optional[int]) -> int:
     return n
 
 
-_timings: dict[str, float] = {"io": 0.0, "decomp": 0.0, "parse": 0.0, "extract": 0.0}
-
-
-def iter_blocks(db: Path, min_height: int, max_height: Optional[int]):
-    """Stream (height, FullBlock) in chain order — O(1) memory."""
+def iter_raw_blocks(db: Path, min_height: int, max_height: Optional[int]):
+    """Stream (height, raw_bytes) from SQLite — main thread only does I/O."""
     conn = sqlite3.connect(str(db))
     conn.row_factory = sqlite3.Row
     q = "SELECT height, block FROM full_blocks WHERE in_main_chain = 1 AND height >= ? ORDER BY height"
@@ -170,32 +167,30 @@ def iter_blocks(db: Path, min_height: int, max_height: Optional[int]):
     if max_height is not None:
         q = q.replace("ORDER BY", "AND height <= ? ORDER BY")
         params.insert(1, max_height)
-
     for row in conn.execute(q, params):
-        try:
-            t0 = time.perf_counter()
-            raw = row["block"]
-            t1 = time.perf_counter()
-            blob = zstd.decompress(raw)
-            t2 = time.perf_counter()
-            block = FullBlock.from_bytes(blob)
-            t3 = time.perf_counter()
-            _timings["io"] += t1 - t0
-            _timings["decomp"] += t2 - t1
-            _timings["parse"] += t3 - t2
-            yield int(row["height"]), block
-        except Exception as e:
-            print(f"Warning: height {row['height']}: {e}", file=sys.stderr)
+        yield int(row["height"]), bytes(row["block"])
     conn.close()
 
 
-def iter_tasks(db: Path, min_height: int, max_height: Optional[int]):
-    """Stream (height, VDFTask) pairs in chain order."""
-    for height, block in iter_blocks(db, min_height, max_height):
-        t0 = time.perf_counter()
-        tasks = extract_tasks(block)
-        _timings["extract"] += time.perf_counter() - t0
-        yield from tasks
+def process_block(raw: bytes, height: int, backend: str, primes_only: bool) -> tuple[int, int, list]:
+    """Decompress + parse + extract + verify a single block. Runs in thread pool."""
+    try:
+        blob = zstd.decompress(raw)
+        block = FullBlock.from_bytes(blob)
+    except Exception as e:
+        return 0, 0, [(height, f"parse error: {e}")]
+    tasks = extract_tasks(block)
+    ok = fail = 0
+    errors = []
+    for task in tasks:
+        success, err = verify_task(task, backend, primes_only)
+        if success:
+            ok += 1
+        else:
+            fail += 1
+            if err:
+                errors.append((task.height, err))
+    return ok, fail, errors
 
 
 def main() -> None:
@@ -233,44 +228,40 @@ def main() -> None:
     print(f"Backend: {backend_label}   Threads: {args.threads}   Mode: {mode_label}\n")
 
     ok = fail = 0
-    blocks_seen = 0
     last_height = args.start_height
     errors: list[tuple[int, str]] = []
     t0 = time.perf_counter()
 
-    # Sliding window: keep at most `window` futures in flight so we never
-    # buffer the whole chain's worth of tasks in memory.
+    # Main thread feeds raw bytes; thread pool does decomp+parse+verify.
+    # Window: at most threads*4 blocks in flight so memory stays bounded.
     window = args.threads * 4
-    in_flight: collections.deque[tuple[Future, VDFTask]] = collections.deque()
+    in_flight: collections.deque[tuple[Future, int]] = collections.deque()
 
     progress = tqdm(total=nblocks, desc="blocks", unit="block") if HAVE_TQDM else None
     have_progress = progress is not None
-    prev_height = -1
 
     def drain_one() -> None:
         nonlocal ok, fail
-        fut, task = in_flight.popleft()
-        success, err = fut.result()
-        if success:
-            ok += 1
-        else:
-            fail += 1
-            if err:
-                errors.append((task.height, err))
-                if len(errors) <= 5:
-                    print(f"\n  error at height {task.height}: {err}", file=sys.stderr)
+        fut, height = in_flight.popleft()
+        b_ok, b_fail, b_errors = fut.result()
+        ok += b_ok
+        fail += b_fail
+        for h, err in b_errors[:5 - len(errors)]:
+            print(f"\n  error at height {h}: {err}", file=sys.stderr)
+        errors.extend(b_errors)
+        if have_progress:
+            progress.update(1)
+            progress.set_postfix(height=f"{height:,}", proofs=ok + fail)
 
     with ThreadPoolExecutor(max_workers=args.threads) as ex:
-        for task in iter_tasks(args.db, args.start_height, args.max_height):
-            if have_progress and task.height != prev_height:
-                progress.update(1)
-                progress.set_postfix(height=f"{task.height:,}", proofs=ok + fail)
-                prev_height = task.height
-            last_height = task.height
-
+        for height, raw in iter_raw_blocks(args.db, args.start_height, args.max_height):
+            last_height = height
             if len(in_flight) >= window:
                 drain_one()
-            in_flight.append((ex.submit(verify_task, task, args.backend, args.primes_only), task))
+            in_flight.append((
+                ex.submit(process_block, raw, height, args.backend, args.primes_only),
+                height,
+            ))
 
         while in_flight:
             drain_one()
@@ -296,12 +287,6 @@ def main() -> None:
 
     if len(errors) > 5:
         print(f"({len(errors) - 5} more errors suppressed)", file=sys.stderr)
-
-    total_main = sum(_timings.values())
-    if total_main > 0:
-        print(f"\nMain-thread breakdown (cumulative, single-threaded):")
-        for stage, t in _timings.items():
-            print(f"  {stage:10s}: {t:8.2f}s  ({100*t/total_main:.1f}%)")
 
 
 if __name__ == "__main__":
