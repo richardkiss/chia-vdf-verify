@@ -158,6 +158,9 @@ def count_blocks(db: Path, min_height: int, max_height: Optional[int]) -> int:
     return n
 
 
+_timings: dict[str, float] = {"io": 0.0, "decomp": 0.0, "parse": 0.0, "extract": 0.0}
+
+
 def iter_blocks(db: Path, min_height: int, max_height: Optional[int]):
     """Stream (height, FullBlock) in chain order — O(1) memory."""
     conn = sqlite3.connect(str(db))
@@ -170,7 +173,17 @@ def iter_blocks(db: Path, min_height: int, max_height: Optional[int]):
 
     for row in conn.execute(q, params):
         try:
-            yield int(row["height"]), FullBlock.from_bytes(zstd.decompress(row["block"]))
+            t0 = time.perf_counter()
+            raw = row["block"]
+            t1 = time.perf_counter()
+            blob = zstd.decompress(raw)
+            t2 = time.perf_counter()
+            block = FullBlock.from_bytes(blob)
+            t3 = time.perf_counter()
+            _timings["io"] += t1 - t0
+            _timings["decomp"] += t2 - t1
+            _timings["parse"] += t3 - t2
+            yield int(row["height"]), block
         except Exception as e:
             print(f"Warning: height {row['height']}: {e}", file=sys.stderr)
     conn.close()
@@ -179,8 +192,10 @@ def iter_blocks(db: Path, min_height: int, max_height: Optional[int]):
 def iter_tasks(db: Path, min_height: int, max_height: Optional[int]):
     """Stream (height, VDFTask) pairs in chain order."""
     for height, block in iter_blocks(db, min_height, max_height):
-        for task in extract_tasks(block):
-            yield task
+        t0 = time.perf_counter()
+        tasks = extract_tasks(block)
+        _timings["extract"] += time.perf_counter() - t0
+        yield from tasks
 
 
 def main() -> None:
@@ -281,6 +296,12 @@ def main() -> None:
 
     if len(errors) > 5:
         print(f"({len(errors) - 5} more errors suppressed)", file=sys.stderr)
+
+    total_main = sum(_timings.values())
+    if total_main > 0:
+        print(f"\nMain-thread breakdown (cumulative, single-threaded):")
+        for stage, t in _timings.items():
+            print(f"  {stage:10s}: {t:8.2f}s  ({100*t/total_main:.1f}%)")
 
 
 if __name__ == "__main__":
